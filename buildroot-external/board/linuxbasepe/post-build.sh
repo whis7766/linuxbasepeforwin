@@ -9,10 +9,15 @@ chmod 0755 "${TARGET_DIR}/etc/init.d/S99lbpe" 2>/dev/null || true
 # glibc gconv modules: Buildroot only installs shared libs, but hivex/NTFS
 # and the GUI need UTF-16LE<->UTF-8 conversion for Windows key names.
 STAGING_DIR="${TARGET_DIR%/*}/staging"
-if [ -d "${STAGING_DIR}/usr/lib/gconv" ]; then
-    mkdir -p "${TARGET_DIR}/usr/lib/gconv"
-    cp -a "${STAGING_DIR}/usr/lib/gconv/." "${TARGET_DIR}/usr/lib/gconv/"
-fi
+# Buildroot x86_64 glibc installs gconv under /usr/lib64/gconv; older layouts
+# use /usr/lib/gconv. Copy whichever exists, preserving the matching path so
+# libhivex's iconv finds UTF-16LE/LATIN1 converters at runtime.
+for g in usr/lib64/gconv usr/lib/gconv; do
+    if [ -d "${STAGING_DIR}/${g}" ]; then
+        mkdir -p "${TARGET_DIR}/${g}"
+        cp -a "${STAGING_DIR}/${g}/." "${TARGET_DIR}/${g}/"
+    fi
+done
 
 # Convenience: mount points used by the maintenance tools.
 mkdir -p "${TARGET_DIR}/mnt" "${TARGET_DIR}/run" "${TARGET_DIR}/tmp"
