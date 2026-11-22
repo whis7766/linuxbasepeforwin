@@ -216,7 +216,7 @@ QString diskPartition(const QString &dev, int pno, quint64 startSector, quint64 
     if (endSector >= total) { close(fd); return QString("end sector beyond device (%1)").arg(total); }
 
     GptHdr h{};
-    pread(fd, &h, sizeof h, 512);
+    if (pread(fd, &h, sizeof h, 512) != ssize_t(sizeof h)) { close(fd); return err("read GPT header"); }
     const bool hasGpt = memcmp(h.sig, "EFI PART", 8) == 0 && h.size >= 92 && h.size <= 512;
 
     if (hasGpt) {
@@ -270,7 +270,7 @@ QString diskPartition(const QString &dev, int pno, quint64 startSector, quint64 
 
     // 无 GPT：仅允许在空白盘上新建，避免误毁 MBR 分区表
     unsigned char mbr[512]{};
-    pread(fd, mbr, sizeof mbr, 0);
+    if (pread(fd, mbr, sizeof mbr, 0) != ssize_t(sizeof mbr)) { close(fd); return err("read MBR"); }
     if (mbr[510] == 0x55 && mbr[511] == 0xAA) {
         bool hasEntry = false;
         for (int i = 0; i < 4; i++) if (mbr[446 + i * 16 + 4]) { hasEntry = true; break; }
@@ -773,6 +773,27 @@ QString uefiList()
     return out;
 }
 
+static QString parentDiskDev(const QString &partDev)
+{
+    const QString name = QFileInfo(partDev).fileName();
+    const QString sys = QStringLiteral("/sys/class/block/") + name;
+    QFileInfo fi(sys);
+    if (fi.isSymLink()) {
+        const QString target = fi.symLinkTarget();
+        if (!target.isEmpty()) {
+            const QString diskName = QFileInfo(QFileInfo(target).absolutePath()).fileName();
+            if (!diskName.isEmpty() && QFile::exists(QStringLiteral("/sys/class/block/") + diskName))
+                return QStringLiteral("/dev/") + diskName;
+        }
+    }
+    QString disk = name;
+    if (name.startsWith(QStringLiteral("nvme"), Qt::CaseInsensitive))
+        disk.remove(QRegularExpression("p\\d+$"));
+    else
+        disk.remove(QRegularExpression("\\d+$"));
+    return disk == name ? QString() : QStringLiteral("/dev/") + disk;
+}
+
 QString uefiDevicePath(const QString &espDev, const QString &fileRel)
 {
     const QString base = QFileInfo(espDev).fileName();
@@ -782,12 +803,14 @@ QString uefiDevicePath(const QString &espDev, const QString &fileRel)
     int pno = pm.captured(1).toInt();
     if (pno < 1) return QStringLiteral("error: 分区号无效");
 
-    QFile f(espDev);
-    if (!f.open(QIODevice::ReadOnly)) return QStringLiteral("error: 打不开 ESP 设备");
+    const QString diskDev = parentDiskDev(espDev);
+    if (diskDev.isEmpty()) return QStringLiteral("error: 无法从分区定位整块磁盘");
+    QFile f(diskDev);
+    if (!f.open(QIODevice::ReadOnly)) return QStringLiteral("error: 打不开 ESP 所在整块磁盘");
     int fd = f.handle();
     GptHdr h{};
     if (pread(fd, &h, sizeof h, 512) != ssize_t(sizeof h) || memcmp(h.sig, "EFI PART", 8) != 0)
-        return QStringLiteral("error: ESP 不是 GPT 分区（仅支持 GPT/UEFI）");
+        return QStringLiteral("error: ESP 所在磁盘不是 GPT（仅支持 GPT/UEFI）");
     if (h.entSize != sizeof(GptEntry) || h.entNum == 0 || h.entNum > 1024)
         return QStringLiteral("error: GPT 条目布局不支持");
     QByteArray ents(int(h.entNum) * int(h.entSize), 0);
@@ -820,6 +843,8 @@ QString uefiDevicePath(const QString &espDev, const QString &fileRel)
     put64(hd, 4, pe.first);
     put64(hd, 12, pe.last - pe.first + 1);
     memcpy(hd.data() + 20, pe.guid, 16);
+    hd[36] = char(0x02); // Partition Format: GPT
+    hd[37] = char(0x02); // Signature Type: GUID
 
     QByteArray filePath;
     QString rel = fileRel.trimmed();
@@ -871,7 +896,16 @@ QString uefiDel(const QString &num)
 {
     quint16 v = num.toUShort(nullptr, 16);
     QString name = QString("Boot%1-%2").arg(v, 4, 16, QChar('0')).arg(GUID);
-    return QFile::remove(EV + name) ? QString("deleted %1").arg(name) : err("unlink");
+    if (!QFile::remove(EV + name)) return err("unlink");
+
+    QByteArray order = readVar("BootOrder-" + GUID, nullptr);
+    QByteArray next;
+    for (int i = 0; i + 1 < order.size(); i += 2) {
+        quint16 item = (quint16)(unsigned char)order[i] | ((quint16)(unsigned char)order[i + 1] << 8);
+        if (item != v) { next.append(order[i]); next.append(order[i + 1]); }
+    }
+    if (next != order) writeVar("BootOrder-" + GUID, 0x7, next);
+    return QString("deleted %1 and removed it from BootOrder").arg(name);
 }
 
 QString uefiSetOrder(const QString &csv)

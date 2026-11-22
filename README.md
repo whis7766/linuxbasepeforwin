@@ -25,7 +25,7 @@ xattr、mount(2)、reboot(2) 以及底层库 C API（libwim、libhivex）直接�
 | ReFS | — | ⬜ 预留（暂无完整 Linux 读写驱动） |
 
 全局 HighDPI 适配：优先读 EDID 物理尺寸按 `PPI/96` 计算缩放，无 EDID 时按 framebuffer 宽度
-（≥3840→2.0、≥2560→1.5），范围 1.0–3.0，基准字号 12pt，保证 2K/4K 与高 PPI 笔电文字不缩小。
+（≥3840→2.0、≥2560→1.5），范围 1.0–3.0，基准字号 14pt，保证 2K/4K 与高 PPI 笔电文字不缩小。
 
 linuxfb 本身不带指针设备；GUI 启动时直接扫描 `/sys/class/input`，原生读取
 `/dev/input/eventN` 的 REL/ABS 与 BTN_LEFT 事件并翻译为 Qt 鼠标事件（不依赖 Qt evdevmouse

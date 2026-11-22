@@ -40,7 +40,7 @@ Windows 的磁盘做备份 / 还原 / 维护。所有功能集成于**单一 Qt6
 4. **磁盘管理**：
    - 分区：直接构造并写入保护性 MBR / GPT 头与分区表项（扇区精确），再 `BLKRRPART`
    - NVMe 擦除：`ioctl(NVME_IOCTL_ADMIN_CMD)` sanitize(0x84)，轮询 sanitize-log(0x81)
-   - HDD 填零：`pwrite` 顺序写零
+   - HDD 填零：`BLKZEROOUT` ioctl
    - SSD TRIM：`ioctl(BLKDISCARD)`
 5. **冷重启/关机**：`reboot(2)`（`LINUX_REBOOT_CMD_RESTART` / `POWER_OFF`）；冷重启写
    `/proc/sysrq-trigger` 的 `b`。
@@ -56,7 +56,7 @@ GUI 为 Qt6 页内进程内调用上述后端（`src/gui/Backend.cpp`），长�
 - 内核 6.12 LTS，x86_64 默认 defconfig；glibc 工具链 + C++
 - Qt6：qt6base（gui + widgets + linuxfb 平台插件），GUI 直接跑 framebuffer，无需 X/Wayland
 - rootfs：initramfs 内嵌内核（真·内存系统）
-- 引导：grub2（i386-pc + x86_64-efi），genimage 生成 BIOS+UEFI 混合 ISO
+- 引导：grub2（i386-pc + x86_64-efi），`grub-mkrescue` 生成 BIOS+UEFI 混合 ISO
 - 自研 GUI 作为 Buildroot 本地包 `lbpe-gui`（CMake，源码 `src/gui/`）
 - 专用库：libwim（WIM）、libhivex（注册表/BCD），均由 Buildroot 包直接链接进 GUI 进程
 

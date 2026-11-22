@@ -80,10 +80,10 @@ GUI 启动时按以下顺序决定缩放：
 1. 若环境已有 `QT_SCALE_FACTOR`，直接使用
 2. 读 `/sys/class/drm/card*/edid` 的物理尺寸，按 `PPI / 96` 计算缩放（支持 2K/4K/高 PPI 笔电）
 3. 无 EDID 时按 framebuffer 宽度：≥3840 → 2.0，≥2560 → 1.5，否则 1.0
-4. 缩放限制在 1.0–3.0，基准字号 12pt，保证高分屏文字不缩小
+4. 缩放限制在 1.0–3.0，基准字号 14pt，保证高分屏文字不缩小
 
 ## 鼠标
 
-linuxfb 平台本身不带指针支持。程序启动时扫描 `/sys/class/input/event*` 的 `rel` 能力位
-（REL_X|REL_Y），找到鼠标后设置 `QT_QPA_GENERIC_PLUGINS=evdevmouse` 与其设备节点。
-内核已内建 `INPUT_EVDEV`、PS/2 与 USB HID，真机 USB 鼠标可直接使用。
+linuxfb 平台本身不带指针支持。程序启动时扫描 `/sys/class/input/event*` 的 REL/ABS 能力位，
+进程内直接读取 `/dev/input/eventN` 事件并翻译成 Qt 鼠标事件，不依赖 Qt evdevmouse 插件。
+内核已内建 `INPUT_EVDEV`、PS/2 与 USB HID，真机 PS/2、USB 鼠标与 USB 平板可直接使用。
