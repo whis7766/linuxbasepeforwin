@@ -1,0 +1,19 @@
+#!/bin/sh
+# Autostart the integrated maintenance GUI on the framebuffer, with HighDPI
+# scaling derived from the framebuffer width so text stays readable on 2K/4K.
+
+case "$1" in
+  start)
+    export QT_QPA_PLATFORM=linuxfb
+    export QT_ENABLE_HIGHDPI_SCALING=1
+    export QT_QPA_FONTDIR=/usr/share/fonts
+    export XDG_RUNTIME_DIR=/tmp
+    fc-cache -f >/dev/null 2>&1 || true
+
+    # 缩放由 GUI 自己按 EDID PPI / framebuffer 宽度计算，避免脚本粗阈值。
+
+    if [ -x /usr/bin/lbpe-gui ]; then
+      /usr/bin/lbpe-gui -platform linuxfb >/tmp/lbpe-gui.log 2>&1 &
+    fi
+    ;;
+esac

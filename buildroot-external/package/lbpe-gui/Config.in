@@ -1,0 +1,7 @@
+config BR2_PACKAGE_LBPE_GUI
+	bool "lbpe-gui"
+	depends on BR2_PACKAGE_QT6BASE
+	select BR2_PACKAGE_QT6BASE_GUI
+	select BR2_PACKAGE_QT6BASE_WIDGETS
+	help
+	  linuxbasepeforwin integrated Qt6 maintenance GUI.

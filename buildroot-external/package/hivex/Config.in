@@ -1,0 +1,8 @@
+config BR2_PACKAGE_HIVEX
+	bool "hivex"
+	select BR2_PACKAGE_LIBXML2
+	help
+	  Library for reading and writing Windows Registry hive files
+	  (used for BCD editing). Provides libhivex.
+
+	  https://libguestfs.org/hivex/
