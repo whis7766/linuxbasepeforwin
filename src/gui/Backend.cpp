@@ -608,6 +608,47 @@ QString bcdList(const QString &file)
     return out;
 }
 
+QStringList bcdObjectGuids(const QString &file)
+{
+    QStringList out;
+    hive_h *h = hivex_open(file.toUtf8().constData(), 0);
+    if (!h) return out;
+    hive_node_h objs = bcdObjects(h, false);
+    if (!objs) { hivex_close(h); return out; }
+    hive_node_h *os = hivex_node_children(h, objs);
+    if (os) {
+        for (int i = 0; os[i]; i++) {
+            char *nm = hivex_node_name(h, os[i]);
+            if (nm && nm[0]) out << QString::fromUtf8(nm);
+            free(nm);
+        }
+        free(os);
+    }
+    hivex_close(h);
+    return out;
+}
+
+QStringList bcdElementIds(const QString &file, const QString &guid)
+{
+    QStringList out;
+    hive_h *h = hivex_open(file.toUtf8().constData(), 0);
+    if (!h) return out;
+    hive_node_h objs = bcdObjects(h, false);
+    hive_node_h obj = objs ? bcdChildCI(h, objs, guid.trimmed()) : 0;
+    hive_node_h els = obj ? bcdChildCI(h, obj, QStringLiteral("Elements")) : 0;
+    hive_node_h *es = els ? hivex_node_children(h, els) : nullptr;
+    if (es) {
+        for (int i = 0; es[i]; i++) {
+            char *nm = hivex_node_name(h, es[i]);
+            if (nm && nm[0]) out << QString::fromUtf8(nm);
+            free(nm);
+        }
+        free(es);
+    }
+    hivex_close(h);
+    return out;
+}
+
 QString bcdGetElement(const QString &file, const QString &guid, const QString &elem)
 {
     hive_h *h = hivex_open(file.toUtf8().constData(), 0);
@@ -797,6 +838,14 @@ QString fsMount(const QString &dev, const QString &dir)
     if (mount(s.constData(), t.constData(), "ntfs3", 0, nullptr) == 0) return QString("mounted ntfs3");
     if (mount(s.constData(), t.constData(), "ntfs-3g", 0, nullptr) == 0) return QString("mounted ntfs-3g");
     return err("mount");
+}
+
+QString fsUnmount(const QString &dir)
+{
+    sync();
+    if (umount2(dir.toUtf8().constData(), 0) == 0) return QString("unmounted");
+    if (umount2(dir.toUtf8().constData(), MNT_DETACH) == 0) return QString("unmounted (lazy)");
+    return err("umount");
 }
 
 QString fsAttrGet(const QString &path)

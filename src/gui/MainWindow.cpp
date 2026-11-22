@@ -23,6 +23,7 @@
 #include <QMessageBox>
 #include <QInputDialog>
 #include <QFont>
+#include <QRegularExpression>
 #include <QFile>
 #include <QFileInfo>
 #include <QTextStream>
@@ -84,9 +85,26 @@ QWidget *MainWindow::buildWimPage()
     dest->setText(QStringLiteral("/mnt/win"));
     auto *app = new QPushButton(QStringLiteral("应用 Apply"));
     auto *log = makeLog();
-    lay->addWidget(src); lay->addWidget(wim); lay->addWidget(ex); lay->addWidget(cap);
-    auto *row = new QHBoxLayout; row->addWidget(new QLabel(QStringLiteral("索引"))); row->addWidget(idx); row->addWidget(dest); row->addWidget(app);
+    auto *srcBrowse = new QPushButton(QStringLiteral("浏览…"));
+    auto *srcRow = new QHBoxLayout; srcRow->addWidget(new QLabel(QStringLiteral("源目录"))); srcRow->addWidget(src, 1); srcRow->addWidget(srcBrowse);
+    auto *wimBrowse = new QPushButton(QStringLiteral("保存到…"));
+    auto *wimRow = new QHBoxLayout; wimRow->addWidget(new QLabel(QStringLiteral("WIM 文件"))); wimRow->addWidget(wim, 1); wimRow->addWidget(wimBrowse);
+    auto *destBrowse = new QPushButton(QStringLiteral("浏览…"));
+    lay->addLayout(srcRow); lay->addLayout(wimRow); lay->addWidget(ex); lay->addWidget(cap);
+    auto *row = new QHBoxLayout; row->addWidget(new QLabel(QStringLiteral("索引"))); row->addWidget(idx); row->addWidget(dest, 1); row->addWidget(destBrowse); row->addWidget(app);
     lay->addLayout(row); lay->addWidget(log, 1);
+    connect(srcBrowse, &QPushButton::clicked, page, [=]() {
+        QString d = QFileDialog::getExistingDirectory(page, QStringLiteral("选择源目录"), src->text());
+        if (!d.isEmpty()) src->setText(d);
+    });
+    connect(wimBrowse, &QPushButton::clicked, page, [=]() {
+        QString f = QFileDialog::getSaveFileName(page, QStringLiteral("保存 WIM"), wim->text(), QStringLiteral("WIM (*.wim)"));
+        if (!f.isEmpty()) wim->setText(f);
+    });
+    connect(destBrowse, &QPushButton::clicked, page, [=]() {
+        QString d = QFileDialog::getExistingDirectory(page, QStringLiteral("选择还原目标"), dest->text());
+        if (!d.isEmpty()) dest->setText(d);
+    });
 
     connect(cap, &QPushButton::clicked, page, [=]() {
         QString cfg;
@@ -125,7 +143,8 @@ QWidget *MainWindow::buildFileManagerPage()
     dev->setToolTip(QStringLiteral("设备（自动枚举 /proc/partitions）"));
     auto *dir = new QLineEdit; dir->setText("/mnt/win");
     auto *mnt = new QPushButton(QStringLiteral("挂载 NTFS"));
-    mrow->addWidget(dev); mrow->addWidget(dir); mrow->addWidget(mnt); lay->addLayout(mrow);
+    auto *umnt = new QPushButton(QStringLiteral("卸载"));
+    mrow->addWidget(dev); mrow->addWidget(dir); mrow->addWidget(mnt); mrow->addWidget(umnt); lay->addLayout(mrow);
     auto *model = new QFileSystemModel; model->setRootPath(QStringLiteral("/mnt"));
     auto *tree = new QTreeView; tree->setModel(model); tree->setRootIndex(model->index(QStringLiteral("/mnt")));
     lay->addWidget(tree, 1);
@@ -141,6 +160,12 @@ QWidget *MainWindow::buildFileManagerPage()
         QString d = dev->currentText(), t = dir->text();
         model->setRootPath(t); tree->setRootIndex(model->index(t));
         async(fmlog, [=]() { return bk::fsMount(d, t); });
+    });
+    connect(umnt, &QPushButton::clicked, page, [=]() {
+        QString t = dir->text();
+        QString r = bk::fsUnmount(t);
+        fmlog->appendPlainText(r);
+        if (r.startsWith("unmounted")) { model->setRootPath(QStringLiteral("/mnt")); tree->setRootIndex(model->index(QStringLiteral("/mnt"))); }
     });
     auto selected = [=]() { return model->filePath(tree->currentIndex()); };
 
@@ -205,7 +230,9 @@ QWidget *MainWindow::buildDiskPage()
     connect(refresh, &QPushButton::clicked, page, [=]() { log->appendPlainText(bk::diskList()); });
 
     auto *pform = new QFormLayout;
-    auto *pdisk = new QLineEdit("/dev/sda");
+    auto *pdisk = new QComboBox; pdisk->setEditable(true);
+    pdisk->addItem(QStringLiteral("— 选择磁盘 —"));
+    for (const QString &d : bk::blockDevices()) pdisk->addItem(d);
     auto *pnum = new QSpinBox; pnum->setMinimum(1);
     auto *pstart = new QSpinBox; pstart->setMaximum(2000000000); pstart->setValue(2048);
     auto *pend = new QSpinBox; pend->setMaximum(2000000000); pend->setValue(2097151);
@@ -214,20 +241,27 @@ QWidget *MainWindow::buildDiskPage()
     pform->addRow(QStringLiteral("起始扇区"), pstart); pform->addRow(QStringLiteral("结束扇区"), pend);
     pform->addRow(pbtn); lay->addLayout(pform);
     connect(pbtn, &QPushButton::clicked, page, [=]() {
-        QString d = pdisk->text(); int n = pnum->value(); quint64 s = pstart->value(), e = pend->value();
+        QString d = pdisk->currentText(); int n = pnum->value(); quint64 s = pstart->value(), e = pend->value();
+        if (d.startsWith(QStringLiteral("—")) || d.isEmpty()) { post(log, QStringLiteral("先选择目标磁盘")); return; }
+        if (QMessageBox::question(page, QStringLiteral("重建 GPT"),
+              QStringLiteral("将在 %1 新建 GPT 并创建分区 %2（扇区 %3-%4），现有分区表会被覆盖，确认？").arg(d).arg(n).arg(s).arg(e)) != QMessageBox::Yes) return;
         async(log, [=]() { return bk::diskPartition(d, n, s, e); });
     });
 
     auto *erow = new QHBoxLayout;
-    auto *edev = new QLineEdit; edev->setPlaceholderText(QStringLiteral("擦除目标设备"));
+    auto *edev = new QComboBox; edev->setEditable(true);
+    edev->addItem(QStringLiteral("— 选择擦除目标 —"));
+    for (const QString &d : bk::blockDevices()) edev->addItem(d);
     auto *emethod = new QComboBox; emethod->addItems({"NVMe block-erase", "NVMe crypto-erase", "HDD 填零(BLKZEROOUT)", "SSD TRIM(BLKDISCARD)"});
     auto *ebtn = new QPushButton(QStringLiteral("执行擦除"));
     erow->addWidget(edev); erow->addWidget(emethod); erow->addWidget(ebtn); lay->addLayout(erow);
     lay->addWidget(log, 1);
     connect(ebtn, &QPushButton::clicked, page, [=]() {
+        QString d = edev->currentText();
+        if (d.startsWith(QStringLiteral("—")) || d.isEmpty()) { post(log, QStringLiteral("先选择擦除目标设备")); return; }
         if (QMessageBox::question(page, QStringLiteral("危险"),
-              QStringLiteral("将擦除 %1，数据不可恢复，确认？").arg(edev->text())) != QMessageBox::Yes) return;
-        QString d = edev->text(); int m = emethod->currentIndex();
+              QStringLiteral("将擦除 %1，数据不可恢复，确认？").arg(d)) != QMessageBox::Yes) return;
+        int m = emethod->currentIndex();
         async(log, [=]() {
             switch (m) {
             case 0: return bk::nvmeSanitize(d, 2);
@@ -247,7 +281,8 @@ QWidget *MainWindow::buildBcdPage()
     auto *file = new QLineEdit; file->setPlaceholderText(QStringLiteral("BCD 文件路径"));
     file->setText(QStringLiteral("/mnt/win/Windows/System32/config/BCD"));
     auto *findBtn = new QPushButton(QStringLiteral("自动查找"));
-    auto *frow = new QHBoxLayout; frow->addWidget(file); frow->addWidget(findBtn);
+    auto *browseBtn = new QPushButton(QStringLiteral("浏览…"));
+    auto *frow = new QHBoxLayout; frow->addWidget(file); frow->addWidget(browseBtn); frow->addWidget(findBtn);
     auto *log = makeLog();
     connect(findBtn, &QPushButton::clicked, page, [=]() {
         const QStringList cands = {"/mnt/win/BCD", "/mnt/win/Windows/System32/config/BCD", "/mnt/win/Boot/BCD"};
@@ -262,8 +297,10 @@ QWidget *MainWindow::buildBcdPage()
     auto *label = new QLineEdit; label->setText("Windows");
     auto *listBtn = new QPushButton(QStringLiteral("列出对象 / 元素"));
 
-    auto *obj = new QLineEdit; obj->setPlaceholderText(QStringLiteral("对象 GUID，如 {9dea862c-5cdd-4e70-acc1-f32b344d4795}"));
-    auto *elem = new QLineEdit; elem->setPlaceholderText(QStringLiteral("元素 ID，如 12000002")); elem->setText("12000002");
+    auto *obj = new QComboBox; obj->setEditable(true); obj->setInsertPolicy(QComboBox::NoInsert);
+    obj->lineEdit()->setPlaceholderText(QStringLiteral("对象 GUID，如 {9dea862c-5cdd-4e70-acc1-f32b344d4795}"));
+    auto *elem = new QComboBox; elem->setEditable(true); elem->setInsertPolicy(QComboBox::NoInsert);
+    elem->lineEdit()->setPlaceholderText(QStringLiteral("元素 ID，如 12000002"));
     auto *type = new QComboBox;
     type->addItem("REG_SZ", int(hive_t_REG_SZ));
     type->addItem("REG_BINARY", int(hive_t_REG_BINARY));
@@ -272,7 +309,8 @@ QWidget *MainWindow::buildBcdPage()
     auto *val = new QPlainTextEdit; val->setMaximumHeight(90);
     val->setPlaceholderText(QStringLiteral("元素值：字符串直接填；二进制填十六进制；DWORD 填十进制或 0x..."));
 
-    auto *row1 = new QHBoxLayout; row1->addWidget(obj); row1->addWidget(new QLabel("元素")); row1->addWidget(elem);
+    auto *row1 = new QHBoxLayout; row1->addWidget(new QLabel("对象")); row1->addWidget(obj, 1);
+    row1->addWidget(new QLabel("元素")); row1->addWidget(elem);
     row1->addWidget(type);
     auto *row2 = new QHBoxLayout;
     auto *getBtn = new QPushButton(QStringLiteral("读取元素"));
@@ -285,18 +323,43 @@ QWidget *MainWindow::buildBcdPage()
     lay->addLayout(row1); lay->addWidget(val); lay->addLayout(row2);
     lay->addWidget(log, 1);
 
+    auto refreshElements = [=]() {
+        QString f = file->text().trimmed(), g = obj->currentText().trimmed();
+        elem->clear();
+        if (f.isEmpty() || g.isEmpty()) return;
+        for (const QString &id : bk::bcdElementIds(f, g)) elem->addItem(id);
+        if (elem->count()) elem->setCurrentIndex(0);
+    };
+    connect(browseBtn, &QPushButton::clicked, page, [=]() {
+        QString f = QFileDialog::getOpenFileName(page, QStringLiteral("选择 BCD"), QStringLiteral("/mnt/win"), QStringLiteral("BCD (*.BCD);;所有文件 (*)"));
+        if (!f.isEmpty()) file->setText(f);
+    });
     connect(exp, &QPushButton::clicked, page, [=]() {
         QString f = file->text().trimmed(); async(log, [=]() { return bk::bcdExport(f); });
     });
     connect(listBtn, &QPushButton::clicked, page, [=]() {
-        QString f = file->text().trimmed(); async(log, [=]() { return bk::bcdList(f); });
+        QString f = file->text().trimmed();
+        QString r = bk::bcdList(f);
+        post(log, r);
+        QStringList gs;
+        for (const QString &line : r.split('\n')) {
+            QRegularExpressionMatch m = QRegularExpression(QStringLiteral("^\\{[0-9a-fA-F-]+\\}")).match(line);
+            if (m.hasMatch()) gs << m.captured(0);
+        }
+        QString cur = obj->currentText();
+        obj->clear();
+        obj->addItems(gs);
+        if (!cur.isEmpty()) obj->setEditText(cur);
+        else if (!gs.isEmpty()) obj->setCurrentIndex(0);
+        refreshElements();
     });
+    connect(obj, &QComboBox::currentTextChanged, page, [=]() { refreshElements(); });
     connect(cre, &QPushButton::clicked, page, [=]() {
         QString f = file->text().trimmed(), r = root->text(), l = label->text();
         async(log, [=]() { return bk::bcdCreate(f, l, r); });
     });
     connect(getBtn, &QPushButton::clicked, page, [=]() {
-        QString f = file->text().trimmed(), g = obj->text().trimmed(), e = elem->text().trimmed();
+        QString f = file->text().trimmed(), g = obj->currentText().trimmed(), e = elem->currentText().trimmed();
         if (f.isEmpty() || g.isEmpty() || e.isEmpty()) { log->appendPlainText("文件 / GUID / 元素 ID 不能为空"); return; }
         QString r = bk::bcdGetElement(f, g, e);
         int t = -1;
@@ -312,14 +375,14 @@ QWidget *MainWindow::buildBcdPage()
         log->appendPlainText(QString("type=%1\n%2").arg(t).arg(r));
     });
     connect(setBtn, &QPushButton::clicked, page, [=]() {
-        QString f = file->text().trimmed(), g = obj->text().trimmed(), e = elem->text().trimmed();
+        QString f = file->text().trimmed(), g = obj->currentText().trimmed(), e = elem->currentText().trimmed();
         if (f.isEmpty() || g.isEmpty() || e.isEmpty()) { log->appendPlainText("文件 / GUID / 元素 ID 不能为空"); return; }
         int t = type->currentData().toInt();
         QString v = val->toPlainText();
         async(log, [=]() { return bk::bcdSetElement(f, g, e, t, v); });
     });
     connect(delBtn, &QPushButton::clicked, page, [=]() {
-        QString f = file->text().trimmed(), g = obj->text().trimmed(), e = elem->text().trimmed();
+        QString f = file->text().trimmed(), g = obj->currentText().trimmed(), e = elem->currentText().trimmed();
         if (f.isEmpty() || g.isEmpty() || e.isEmpty()) { log->appendPlainText("文件 / GUID / 元素 ID 不能为空"); return; }
         if (QMessageBox::question(page, QStringLiteral("删除元素"), QStringLiteral("确认删除 %1 的 %2 元素？").arg(g, e)) != QMessageBox::Yes) return;
         async(log, [=]() { return bk::bcdDeleteElement(f, g, e); });
@@ -367,9 +430,15 @@ QWidget *MainWindow::buildPowerPage()
     auto *reboot = new QPushButton(QStringLiteral("重启 (warm reboot)"));
     auto *cold = new QPushButton(QStringLiteral("冷重启 (cold reboot)"));
     auto *off = new QPushButton(QStringLiteral("关机 (poweroff)"));
-    connect(reboot, &QPushButton::clicked, page, []() { bk::powerReboot(); });
-    connect(cold, &QPushButton::clicked, page, []() { bk::powerCold(); });
-    connect(off, &QPushButton::clicked, page, []() { bk::powerOff(); });
+    connect(reboot, &QPushButton::clicked, page, [=]() {
+        if (QMessageBox::question(page, QStringLiteral("重启"), QStringLiteral("确认重启？未保存的更改会丢失。")) == QMessageBox::Yes) bk::powerReboot();
+    });
+    connect(cold, &QPushButton::clicked, page, [=]() {
+        if (QMessageBox::question(page, QStringLiteral("冷重启"), QStringLiteral("确认冷重启？")) == QMessageBox::Yes) bk::powerCold();
+    });
+    connect(off, &QPushButton::clicked, page, [=]() {
+        if (QMessageBox::question(page, QStringLiteral("关机"), QStringLiteral("确认关机？")) == QMessageBox::Yes) bk::powerOff();
+    });
     lay->addWidget(reboot); lay->addWidget(cold); lay->addWidget(off); lay->addStretch();
     return page;
 }

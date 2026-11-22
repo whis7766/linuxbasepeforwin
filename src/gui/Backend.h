@@ -25,6 +25,8 @@ QString diskTrim(const QString &dev);
 QString bcdExport(const QString &file);
 QString bcdCreate(const QString &file, const QString &label, const QString &winroot);
 QString bcdList(const QString &file);
+QStringList bcdObjectGuids(const QString &file);
+QStringList bcdElementIds(const QString &file, const QString &guid);
 QString bcdGetElement(const QString &file, const QString &guid, const QString &elem);
 QString bcdSetElement(const QString &file, const QString &guid, const QString &elem, int type, const QString &value);
 QString bcdDeleteElement(const QString &file, const QString &guid, const QString &elem);
@@ -39,6 +41,7 @@ QString uefiDrvOrder();
 
 // NTFS via mount(2) + xattr syscalls
 QString fsMount(const QString &dev, const QString &dir);
+QString fsUnmount(const QString &dir);
 QString fsAttrGet(const QString &path);
 QString fsAttrSet(const QString &path, quint32 value);
 QString fsAclGet(const QString &path);
