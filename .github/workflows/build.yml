@@ -14,12 +14,32 @@ env:
   CMAKE_POLICY_VERSION_MINIMUM: "3.5"
 
 jobs:
-  build:
+  gui-check:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dev deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake g++ pkg-config qt6-base-dev libwim-dev libhivex-dev ntfs-3g-dev libfuse-dev \
+            libgl1-mesa-dev libglx-dev libopengl-dev libxkbcommon-dev libvulkan-dev
+      - name: Inspect hivex header
+        run: |
+          sed -n '/struct hive_set_value/,/};/p' /usr/include/hivex.h || true
+          grep -n "hivex_node_set_value\|hive_t_REG_SZ\|typedef.*hive_t\|} hive_t" /usr/include/hivex.h || true
+      - name: Configure & build GUI
+        run: |
+          cmake -S src/gui -B gui-build -DCMAKE_BUILD_TYPE=Release
+          cmake --build gui-build -j"$(nproc)"
+
+  base:
     needs: gui-check
     # 22.04 = gcc11/glibc2.35/cmake3.22: Buildroot 2025.02 builds cleanly here
     # (24.04's cmake4/new-glibc break host-hiredis/host-m4).
     runs-on: ubuntu-22.04
-    timeout-minutes: 330
+    timeout-minutes: 180
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -49,24 +69,161 @@ jobs:
           restore-keys: |
             br-ccache-${{ env.BUILDROOT_VERSION }}-
 
-      - name: Fetch Buildroot
-        run: |
-          wget -q "https://buildroot.org/downloads/buildroot-${BUILDROOT_VERSION}.tar.gz" -O /tmp/buildroot.tar.gz
-          mkdir -p "$HOME/buildroot"
-          tar -xzf /tmp/buildroot.tar.gz -C "$HOME/buildroot" --strip-components=1
+      - name: Configure Buildroot
+        run: ci/setup-buildroot.sh
 
-      - name: Configure
+      - name: Build shared toolchain, host tools, kernel and common dependencies
         run: |
-          mkdir -p ~/.buildroot-dl
-          make -C "$HOME/buildroot" \
-            BR2_EXTERNAL="$GITHUB_WORKSPACE/buildroot-external" \
-            BR2_DL_DIR="$HOME/.buildroot-dl" \
-            O="$GITHUB_WORKSPACE/output" \
-            linuxbasepe_x86_64_defconfig
+          OUT="$GITHUB_WORKSPACE/output"
+          make -C "$OUT" -j"$(nproc)" \
+            host-qt6base \
+            qt6base-depends \
+            double-conversion libb2 pcre2 zlib freetype fontconfig expat \
+            linux busybox bash dejavu wqy-zenhei \
+            dosfstools util-linux attr pciutils usbutils
 
-      - name: Build
+      - name: Archive base output
+        run: ci/save-base-output.sh
+
+      - name: Upload base output
+        uses: actions/upload-artifact@v4
+        with:
+          name: base-output
+          path: base-output.tar.gz
+          retention-days: 3
+
+  parts:
+    needs: base
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: qt
+            targets: qt6base
+            packages: qt6base
+          - name: storage
+            targets: openssl ntfs-3g libxml2 wimlib hivex
+            packages: openssl ntfs-3g libxml2 wimlib hivex
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install host dependencies
         run: |
-          make -C "$GITHUB_WORKSPACE/output" -j"$(nproc)"
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential gcc g++ make patch gzip bzip2 tar cpio \
+            python3 rsync wget file libncurses-dev bc unzip \
+            xorriso mtools dosfstools genisoimage \
+            grub-common grub-pc-bin grub-efi-amd64-bin
+
+      - name: Cache Buildroot downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/.buildroot-dl
+          key: br-dl-${{ env.BUILDROOT_VERSION }}-${{ hashFiles('buildroot-external/configs/*') }}
+          restore-keys: |
+            br-dl-${{ env.BUILDROOT_VERSION }}-
+
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.buildroot-ccache
+          key: br-ccache-${{ env.BUILDROOT_VERSION }}-${{ github.sha }}
+          restore-keys: |
+            br-ccache-${{ env.BUILDROOT_VERSION }}-
+
+      - name: Configure Buildroot
+        run: ci/setup-buildroot.sh
+
+      - name: Download base output
+        uses: actions/download-artifact@v4
+        with:
+          name: base-output
+          path: .
+
+      - name: Restore base output
+        run: tar -xzf base-output.tar.gz -C output
+
+      - name: Build ${{ matrix.name }} package group
+        run: make -C "$GITHUB_WORKSPACE/output" -j"$(nproc)" ${{ matrix.targets }}
+
+      - name: Collect installed overlay
+        run: ci/build-overlay.sh ${{ matrix.packages }}
+
+      - name: Collect package build stamps
+        run: ci/save-part-build.sh ${{ matrix.packages }}
+
+      - name: Upload part artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: part-${{ matrix.name }}
+          path: |
+            part-overlay.tar.gz
+            part-build.tar.gz
+          retention-days: 3
+
+  final:
+    needs: [base, parts]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install host dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential gcc g++ make patch gzip bzip2 tar cpio \
+            python3 rsync wget file libncurses-dev bc unzip \
+            xorriso mtools dosfstools genisoimage \
+            grub-common grub-pc-bin grub-efi-amd64-bin
+
+      - name: Cache Buildroot downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/.buildroot-dl
+          key: br-dl-${{ env.BUILDROOT_VERSION }}-${{ hashFiles('buildroot-external/configs/*') }}
+          restore-keys: |
+            br-dl-${{ env.BUILDROOT_VERSION }}-
+
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.buildroot-ccache
+          key: br-ccache-${{ env.BUILDROOT_VERSION }}-${{ github.sha }}
+          restore-keys: |
+            br-ccache-${{ env.BUILDROOT_VERSION }}-
+
+      - name: Configure Buildroot
+        run: ci/setup-buildroot.sh
+
+      - name: Download base output
+        uses: actions/download-artifact@v4
+        with:
+          name: base-output
+          path: .
+
+      - name: Download parallel part artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: part-*
+          path: parts
+
+      - name: Restore base and part overlays
+        run: |
+          set -euo pipefail
+          tar -xzf base-output.tar.gz -C output
+          find parts -mindepth 1 -maxdepth 1 -type d | while read -r part; do
+            tar -xzf "$part/part-overlay.tar.gz" -C output
+            tar -xzf "$part/part-build.tar.gz" -C output/build
+          done
+
+      - name: Build GUI and assemble ISO
+        run: make -C "$GITHUB_WORKSPACE/output" -j"$(nproc)"
 
       - name: Collect images
         run: |
@@ -88,25 +245,3 @@ jobs:
         with:
           files: artifacts/*
           generate_release_notes: true
-
-  # Fast compile-check of the native C++ GUI against distro Qt6/wimlib/hivex,
-  # so API/compile errors surface in minutes instead of after a full Buildroot run.
-  gui-check:
-    runs-on: ubuntu-22.04
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install dev deps
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            cmake g++ pkg-config qt6-base-dev libwim-dev libhivex-dev ntfs-3g-dev libfuse-dev \
-            libgl1-mesa-dev libglx-dev libopengl-dev libxkbcommon-dev libvulkan-dev
-      - name: Inspect hivex header
-        run: |
-          sed -n '/struct hive_set_value/,/};/p' /usr/include/hivex.h || true
-          grep -n "hivex_node_set_value\|hive_t_REG_SZ\|typedef.*hive_t\|} hive_t" /usr/include/hivex.h || true
-      - name: Configure & build GUI
-        run: |
-          cmake -S src/gui -B gui-build -DCMAKE_BUILD_TYPE=Release
-          cmake --build gui-build -j"$(nproc)"
