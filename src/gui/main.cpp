@@ -265,11 +265,11 @@ int main(int argc, char *argv[])
     base.setFamilies({QStringLiteral("WenQuanYi Zen Hei"),
                       QStringLiteral("Noto Sans CJK SC"),
                       QStringLiteral("DejaVu Sans")});
-    base.setPointSize(12);
+    base.setPointSize(14);
     app.setFont(base);
 
     MainWindow w;
-    w.show();
+    w.showMaximized();
 
     QStringList devDump;
     QDir idir(QStringLiteral("/sys/class/input"));
