@@ -93,6 +93,12 @@ QString wimApply(const QString &wim, int index, const QString &dest, LogFn log)
 // ---------------- Disk (ioctl) ----------------
 static int openDev(const QString &dev, int flags) { return open(dev.toUtf8().constData(), flags); }
 
+static bool isPartitionDev(const QString &dev)
+{
+    QFile f("/sys/class/block/" + QFileInfo(dev).fileName() + "/partition");
+    return f.exists();
+}
+
 QStringList blockDevices()
 {
     QStringList out;
@@ -197,6 +203,7 @@ static bool pwriteAll(int fd, const void *buf, size_t n, off_t off)
 QString diskPartition(const QString &dev, int pno, quint64 startSector, quint64 endSector)
 {
     Q_UNUSED(pno);
+    if (isPartitionDev(dev)) return err("目标是分区，请选择整块磁盘");
     int fd = openDev(dev, O_RDWR);
     if (fd < 0) return err("open");
 
@@ -321,6 +328,7 @@ QString diskPartition(const QString &dev, int pno, quint64 startSector, quint64 
 
 QString nvmeSanitize(const QString &dev, int action)
 {
+    if (isPartitionDev(dev)) return err("目标是分区，不能执行 NVMe sanitize");
     int fd = openDev(dev, O_RDWR);
     if (fd < 0) return err("open");
     struct nvme_admin_cmd cmd{};
@@ -353,6 +361,7 @@ QString nvmeSanitizeLog(const QString &dev)
 
 static QString wholeDevOp(const QString &dev, unsigned long req, const char *name)
 {
+    if (isPartitionDev(dev)) return err("目标是分区，请选择整块磁盘");
     int fd = openDev(dev, O_RDWR);
     if (fd < 0) return err("open");
     quint64 size = 0;
