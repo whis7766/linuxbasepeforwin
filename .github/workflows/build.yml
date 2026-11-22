@@ -80,7 +80,7 @@ jobs:
             qt6base-depends \
             double-conversion libb2 pcre2 zlib freetype fontconfig expat \
             linux busybox bash dejavu wqy-zenhei \
-            dosfstools util-linux attr pciutils usbutils
+            dosfstools util-linux attr
 
       - name: Archive base output
         run: ci/save-base-output.sh
