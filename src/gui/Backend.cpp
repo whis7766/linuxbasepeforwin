@@ -432,6 +432,21 @@ static void bcdBackup(const QString &file)
         QFile::copy(file, bak);
 }
 
+static hive_node_h bcdChildCI(hive_h *h, hive_node_h parent, const QString &name)
+{
+    hive_node_h n = hivex_node_get_child(h, parent, name.toUtf8().constData());
+    if (n) return n;
+    hive_node_h *kids = hivex_node_children(h, parent);
+    if (!kids) return 0;
+    hive_node_h found = 0;
+    for (int i = 0; kids[i]; i++) {
+        QString nm = nodeName(h, kids[i]);
+        if (nm.compare(name, Qt::CaseInsensitive) == 0) { found = kids[i]; break; }
+    }
+    free(kids);
+    return found;
+}
+
 static hive_node_h bcdObjects(hive_h *h, bool create);
 
 QString bcdCreate(const QString &file, const QString &label, const QString &winroot)
@@ -456,7 +471,8 @@ QString bcdCreate(const QString &file, const QString &label, const QString &winr
     QByteArray path = toUtf16("\\Windows\\system32\\winload.efi");
     QByteArray wr = toUtf16(winroot);
     auto setSz = [&](hive_node_h parent, const char *sub, const QByteArray &val) {
-        hive_node_h n = hivex_node_add_child(h, parent, sub);
+        hive_node_h n = bcdChildCI(h, parent, QString::fromUtf8(sub));
+        if (!n) n = hivex_node_add_child(h, parent, sub);
         struct hive_set_value v{};
         v.key = const_cast<char *>("Element");
         v.t = hive_t_REG_SZ;
@@ -509,17 +525,17 @@ static hive_node_h bcdElemNode(hive_h *h, const QString &guid, const QString &el
     hive_node_h o = bcdObjects(h, create);
     if (!o) return 0;
     QByteArray g = guid.trimmed().toUtf8(), e = elem.trimmed().toUtf8();
-    hive_node_h obj = hivex_node_get_child(h, o, g.constData());
+    hive_node_h obj = bcdChildCI(h, o, guid.trimmed());
     if (!obj) {
         if (!create) return 0;
         obj = hivex_node_add_child(h, o, g.constData());
     }
-    hive_node_h els = hivex_node_get_child(h, obj, "Elements");
+    hive_node_h els = bcdChildCI(h, obj, QStringLiteral("Elements"));
     if (!els) {
         if (!create) return 0;
         els = hivex_node_add_child(h, obj, "Elements");
     }
-    hive_node_h n = hivex_node_get_child(h, els, e.constData());
+    hive_node_h n = bcdChildCI(h, els, elem.trimmed());
     if (!n && create) n = hivex_node_add_child(h, els, e.constData());
     return n;
 }
@@ -714,18 +730,15 @@ QString uefiAdd(const QString &desc, const QString &devicePathHex)
     QByteArray dp = QByteArray::fromHex(hex.toLatin1());
     if (dp.size() < 4) return err("invalid device path hex");
 
-    QByteArray fp;                       // EFI_LOAD_OPTION.FilePathList
-    fp.append((char)(dp.size() & 0xff)); fp.append((char)((dp.size() >> 8) & 0xff));
-    fp.append(dp);
-
     QByteArray opt;
     quint32 attr = 0x1;                  // LOAD_OPTION_ACTIVE
     opt.append((char)(attr & 0xff)); opt.append((char)((attr >> 8) & 0xff));
     opt.append((char)((attr >> 16) & 0xff)); opt.append((char)((attr >> 24) & 0xff));
-    opt.append((char)(fp.size() & 0xff)); opt.append((char)((fp.size() >> 8) & 0xff));
+    // EFI_LOAD_OPTION.FilePathListLength counts only the device path bytes.
+    opt.append((char)(dp.size() & 0xff)); opt.append((char)((dp.size() >> 8) & 0xff));
     for (QChar c : desc) { opt.append((char)(c.unicode() & 0xff)); opt.append((char)((c.unicode() >> 8) & 0xff)); }
     opt.append(QByteArray(2, '\0'));     // description NUL
-    opt.append(fp);
+    opt.append(dp);
 
     quint16 num = 0;
     for (; num < 0xFFFE; ++num) {

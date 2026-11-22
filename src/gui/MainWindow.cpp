@@ -21,8 +21,10 @@
 #include <QDialogButtonBox>
 #include <QFileDialog>
 #include <QMessageBox>
+#include <QInputDialog>
 #include <QFont>
 #include <QFile>
+#include <QFileInfo>
 #include <QTextStream>
 #include <QDir>
 #include <QtConcurrent>
@@ -124,13 +126,15 @@ QWidget *MainWindow::buildFileManagerPage()
     auto *dir = new QLineEdit; dir->setText("/mnt/win");
     auto *mnt = new QPushButton(QStringLiteral("挂载 NTFS"));
     mrow->addWidget(dev); mrow->addWidget(dir); mrow->addWidget(mnt); lay->addLayout(mrow);
-    auto *model = new QFileSystemModel; model->setRootPath(dir->text());
-    auto *tree = new QTreeView; tree->setModel(model); tree->setRootIndex(model->index(dir->text()));
+    auto *model = new QFileSystemModel; model->setRootPath(QStringLiteral("/mnt"));
+    auto *tree = new QTreeView; tree->setModel(model); tree->setRootIndex(model->index(QStringLiteral("/mnt")));
     lay->addWidget(tree, 1);
     auto *brow = new QHBoxLayout;
     auto *attr = new QPushButton(QStringLiteral("设置属性"));
     auto *acl = new QPushButton(QStringLiteral("设置 ACL"));
-    brow->addWidget(attr); brow->addWidget(acl); lay->addLayout(brow);
+    auto *del = new QPushButton(QStringLiteral("删除"));
+    auto *ren = new QPushButton(QStringLiteral("重命名"));
+    brow->addWidget(attr); brow->addWidget(acl); brow->addWidget(del); brow->addWidget(ren); lay->addLayout(brow);
     auto *fmlog = makeLog(); fmlog->setMaximumHeight(120); lay->addWidget(fmlog);
 
     connect(mnt, &QPushButton::clicked, page, [=]() {
@@ -158,6 +162,23 @@ QWidget *MainWindow::buildFileManagerPage()
             quint32 nv = (ro->isChecked()?1:0)|(hi->isChecked()?2:0)|(sy->isChecked()?4:0)|(ar->isChecked()?0x20:0);
             fmlog->appendPlainText(bk::fsAttrSet(path, nv));
         }
+    });
+    connect(del, &QPushButton::clicked, page, [=]() {
+        QString path = selected();
+        if (path.isEmpty()) { QMessageBox::warning(page, "提示", "先选择文件"); return; }
+        if (QMessageBox::question(page, "确认删除", "删除 " + path + "（目录将递归删除）？") != QMessageBox::Yes) return;
+        QFileInfo fi(path);
+        bool ok = fi.isDir() ? QDir(path).removeRecursively() : QFile::remove(path);
+        fmlog->appendPlainText(ok ? "deleted: " + path : "delete failed (只读/权限/NTFS 占用)");
+    });
+    connect(ren, &QPushButton::clicked, page, [=]() {
+        QString path = selected();
+        if (path.isEmpty()) { QMessageBox::warning(page, "提示", "先选择文件"); return; }
+        bool ok = false;
+        QString nn = QInputDialog::getText(page, "重命名", "新名称", QLineEdit::Normal, QFileInfo(path).fileName(), &ok);
+        if (!ok || nn.trimmed().isEmpty()) return;
+        QString target = QFileInfo(path).dir().filePath(nn.trimmed());
+        fmlog->appendPlainText(QDir().rename(path, target) ? "renamed: " + target : "rename failed");
     });
     connect(acl, &QPushButton::clicked, page, [=]() {
         QString path = selected();
@@ -225,7 +246,16 @@ QWidget *MainWindow::buildBcdPage()
     auto *h = new QLabel(QStringLiteral("Windows BCD 引导 (libhivex 原生读写)")); h->setFont(titleFont()); lay->addWidget(h);
     auto *file = new QLineEdit; file->setPlaceholderText(QStringLiteral("BCD 文件路径"));
     file->setText(QStringLiteral("/mnt/win/Windows/System32/config/BCD"));
+    auto *findBtn = new QPushButton(QStringLiteral("自动查找"));
+    auto *frow = new QHBoxLayout; frow->addWidget(file); frow->addWidget(findBtn);
     auto *log = makeLog();
+    connect(findBtn, &QPushButton::clicked, page, [=]() {
+        const QStringList cands = {"/mnt/win/BCD", "/mnt/win/Windows/System32/config/BCD", "/mnt/win/Boot/BCD"};
+        for (const QString &c : cands) {
+            if (QFile::exists(c)) { file->setText(c); post(log, QString("found: ") + c); return; }
+        }
+        post(log, QStringLiteral("未找到 BCD（先挂载 Windows 分区）"));
+    });
     auto *exp = new QPushButton(QStringLiteral("导出/读取"));
     auto *cre = new QPushButton(QStringLiteral("创建 BCD(已有 hive 基础上补对象)"));
     auto *root = new QLineEdit; root->setText(QStringLiteral("\\Windows"));
@@ -250,7 +280,7 @@ QWidget *MainWindow::buildBcdPage()
     auto *delBtn = new QPushButton(QStringLiteral("删除元素"));
     row2->addWidget(getBtn); row2->addWidget(setBtn); row2->addWidget(delBtn);
 
-    lay->addWidget(file); lay->addWidget(exp); lay->addWidget(listBtn);
+    lay->addLayout(frow); lay->addWidget(exp); lay->addWidget(listBtn);
     lay->addWidget(root); lay->addWidget(label); lay->addWidget(cre);
     lay->addLayout(row1); lay->addWidget(val); lay->addLayout(row2);
     lay->addWidget(log, 1);
