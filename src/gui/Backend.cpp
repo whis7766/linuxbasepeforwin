@@ -99,7 +99,7 @@ QStringList blockDevices()
     QFile f("/proc/partitions");
     if (!f.open(QIODevice::ReadOnly)) return out;
     const QStringList lines = QString::fromUtf8(f.readAll()).split('\n', Qt::SkipEmptyParts);
-    QRegularExpression re("^(sd[a-z]+|nvme\\d+n\\d+(p\\d+)?|vd[a-z]+|xvd[a-z]+)$");
+    QRegularExpression re("^(sd[a-z]+\\d*|nvme\\d+n\\d+(p\\d+)?|vd[a-z]+\\d*|xvd[a-z]+\\d*)$");
     for (int i = 1; i < lines.size(); ++i) {
         const QStringList cols = lines[i].split(QRegularExpression("\\s+"), Qt::SkipEmptyParts);
         if (cols.size() < 4) continue;
@@ -762,6 +762,69 @@ QString uefiList()
     for (int i = 0; i + 1 < order.size(); i += 2)
         out += QString("%1 ").arg((unsigned char)order[i] | ((unsigned char)order[i + 1] << 8), 4, 16, QChar('0'));
     return out;
+}
+
+QString uefiDevicePath(const QString &espDev, const QString &fileRel)
+{
+    const QString base = QFileInfo(espDev).fileName();
+    QRegularExpression pn(QStringLiteral("(\\d+)$"));
+    QRegularExpressionMatch pm = pn.match(base);
+    if (!pm.hasMatch()) return QStringLiteral("error: ESP 设备需为分区，如 /dev/sda1");
+    int pno = pm.captured(1).toInt();
+    if (pno < 1) return QStringLiteral("error: 分区号无效");
+
+    QFile f(espDev);
+    if (!f.open(QIODevice::ReadOnly)) return QStringLiteral("error: 打不开 ESP 设备");
+    int fd = f.handle();
+    GptHdr h{};
+    if (pread(fd, &h, sizeof h, 512) != ssize_t(sizeof h) || memcmp(h.sig, "EFI PART", 8) != 0)
+        return QStringLiteral("error: ESP 不是 GPT 分区（仅支持 GPT/UEFI）");
+    if (h.entSize != sizeof(GptEntry) || h.entNum == 0 || h.entNum > 1024)
+        return QStringLiteral("error: GPT 条目布局不支持");
+    QByteArray ents(int(h.entNum) * int(h.entSize), 0);
+    if (pread(fd, ents.data(), ents.size(), off_t(h.entLba) * 512) != ssize_t(ents.size()))
+        return QStringLiteral("error: 读 GPT 分区表失败");
+    const GptEntry *e = reinterpret_cast<const GptEntry *>(ents.constData());
+    if (pno > int(h.entNum)) return QStringLiteral("error: 分区号超出 GPT 表");
+    const GptEntry &pe = e[pno - 1];
+    bool zero = true;
+    for (int i = 0; i < 16; i++) if (pe.type[i]) { zero = false; break; }
+    if (zero) return QStringLiteral("error: 该分区在 GPT 中不存在");
+    f.close();
+
+    auto node = [](quint8 type, quint8 sub, const QByteArray &payload) {
+        QByteArray n;
+        n.append(char(type)); n.append(char(sub));
+        quint16 len = quint16(4 + payload.size());
+        n.append(char(len & 0xff)); n.append(char((len >> 8) & 0xff));
+        n.append(payload);
+        return n;
+    };
+    QByteArray hd(38, 0); // Hard Drive device path payload
+    auto put32 = [](QByteArray &b, int off, quint32 v) {
+        for (int i = 0; i < 4; i++) b[off + i] = char((v >> (8 * i)) & 0xff);
+    };
+    auto put64 = [](QByteArray &b, int off, quint64 v) {
+        for (int i = 0; i < 8; i++) b[off + i] = char((v >> (8 * i)) & 0xff);
+    };
+    put32(hd, 0, quint32(pno));
+    put64(hd, 4, pe.first);
+    put64(hd, 12, pe.last - pe.first + 1);
+    memcpy(hd.data() + 20, pe.guid, 16);
+
+    QByteArray filePath;
+    QString rel = fileRel.trimmed();
+    rel.replace('\\', '/');
+    if (!rel.startsWith('/')) rel.prepend('/');
+    rel.replace('/', '\\');
+    for (QChar c : rel) { filePath.append(char(c.unicode() & 0xff)); filePath.append(char((c.unicode() >> 8) & 0xff)); }
+    filePath.append(char(0)); filePath.append(char(0));
+
+    QByteArray dp;
+    dp += node(0x04, 0x01, hd);
+    dp += node(0x04, 0x04, filePath);
+    dp += node(0x7f, 0xff, QByteArray());
+    return QString::fromLatin1(dp.toHex());
 }
 
 QString uefiAdd(const QString &desc, const QString &devicePathHex)

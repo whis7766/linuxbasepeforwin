@@ -33,6 +33,7 @@ QString bcdDeleteElement(const QString &file, const QString &guid, const QString
 
 // UEFI via efivarfs direct read/write
 QString uefiList();
+QString uefiDevicePath(const QString &espDev, const QString &fileRel);
 QString uefiAdd(const QString &desc, const QString &devicePathHex);
 QString uefiDel(const QString &num);
 QString uefiSetOrder(const QString &csv);

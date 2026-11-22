@@ -395,6 +395,22 @@ QWidget *MainWindow::buildUefiPage()
     auto *page = new QWidget; auto *lay = new QVBoxLayout(page);
     auto *h = new QLabel(QStringLiteral("UEFI 启动项 / 驱动项 (efivarfs 原生)")); h->setFont(titleFont()); lay->addWidget(h);
     auto *log = makeLog();
+    auto *adesc = new QLineEdit; adesc->setPlaceholderText(QStringLiteral("新启动项描述"));
+    auto *adev = new QLineEdit; adev->setPlaceholderText(QStringLiteral("EFI 设备路径 hex (如 01041400...)"));
+    auto *add = new QPushButton(QStringLiteral("添加启动项"));
+    auto *esp = new QComboBox; esp->setEditable(true);
+    for (const QString &d : bk::blockDevices()) esp->addItem(d);
+    auto *efi = new QLineEdit; efi->setPlaceholderText(QStringLiteral("ESP 内路径，如 \\EFI\\Microsoft\\Boot\\bootmgfw.efi"));
+    auto *gen = new QPushButton(QStringLiteral("生成设备路径"));
+    auto *grow = new QHBoxLayout; grow->addWidget(new QLabel(QStringLiteral("ESP 分区"))); grow->addWidget(esp);
+    grow->addWidget(new QLabel(QStringLiteral("EFI 文件"))); grow->addWidget(efi, 1); grow->addWidget(gen);
+    lay->addLayout(grow);
+    connect(gen, &QPushButton::clicked, page, [=]() {
+        QString hex = bk::uefiDevicePath(esp->currentText(), efi->text());
+        if (hex.startsWith(QStringLiteral("error:"))) { log->appendPlainText(hex); return; }
+        adev->setText(hex);
+        log->appendPlainText(QString("device path: %1 bytes").arg(hex.size() / 2));
+    });
     auto *list = new QPushButton(QStringLiteral("刷新 Boot 列表"));
     auto *drv = new QPushButton(QStringLiteral("Driver 列表"));
     auto *dorder = new QPushButton(QStringLiteral("读 DriverOrder"));
@@ -410,9 +426,6 @@ QWidget *MainWindow::buildUefiPage()
     drow->addWidget(dnum); drow->addWidget(del); drow->addWidget(order); drow->addWidget(setorder);
     lay->addLayout(drow);
     auto *arow = new QHBoxLayout;
-    auto *adesc = new QLineEdit; adesc->setPlaceholderText(QStringLiteral("新启动项描述"));
-    auto *adev = new QLineEdit; adev->setPlaceholderText(QStringLiteral("EFI 设备路径 hex (如 01041400...)"));
-    auto *add = new QPushButton(QStringLiteral("添加启动项"));
     arow->addWidget(adesc); arow->addWidget(adev); arow->addWidget(add);
     lay->addLayout(arow); lay->addWidget(log, 1);
     connect(add, &QPushButton::clicked, page, [=]() {
