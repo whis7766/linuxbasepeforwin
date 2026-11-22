@@ -781,7 +781,8 @@ static QString parentDiskDev(const QString &partDev)
     if (fi.isSymLink()) {
         const QString target = fi.symLinkTarget();
         if (!target.isEmpty()) {
-            const QString diskName = QFileInfo(QFileInfo(target).absolutePath()).fileName();
+            const QFileInfo targetInfo(fi.dir(), target);
+            const QString diskName = QFileInfo(targetInfo.absolutePath()).fileName();
             if (!diskName.isEmpty() && QFile::exists(QStringLiteral("/sys/class/block/") + diskName))
                 return QStringLiteral("/dev/") + diskName;
         }
