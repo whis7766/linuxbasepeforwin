@@ -67,6 +67,12 @@ BCD 是注册表 hive，路径通常为 `/mnt/win/Boot/BCD`。
 仅 UEFI 引导时 `/sys/firmware/efi/efivars` 存在。可直接读写 `Boot####`、`BootOrder`、
 `Driver####`、`DriverOrder`，删除即 unlink 对应变量。设备路径按 EFI_LOAD_OPTION 的十六进制填写。
 
+1. 选 ESP 分区与 ESP 内 EFI 文件路径，点“生成设备路径”（HardDrive + FilePath + End 节点）
+2. 填描述后点“添加为启动项 / 添加为驱动项”，自动分配最小未用编号并追加到对应 Order
+3. 删除框支持 `Boot0001`、`Driver0001`、`0001` 或纯编号
+4. Order 框填逗号分隔编号，可分别设置 BootOrder 与 DriverOrder
+5. 列表会显示描述与设备路径前 160 字符
+
 ## 电源
 
 - 重启：`reboot(2)` `LINUX_REBOOT_CMD_RESTART`

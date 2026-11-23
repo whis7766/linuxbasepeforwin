@@ -42,6 +42,7 @@ QString uefiDelDriver(const QString &num);
 QString uefiSetDriverOrder(const QString &csv);
 QString uefiDrvList();
 QString uefiDrvOrder();
+QString windowsBootRepair(const QString &espMount, const QString &winMount);
 
 // NTFS via mount(2) + xattr syscalls
 QString fsMount(const QString &dev, const QString &dir);

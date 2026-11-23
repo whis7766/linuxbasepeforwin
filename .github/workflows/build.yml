@@ -69,6 +69,17 @@ jobs:
           restore-keys: |
             br-ccache-${{ env.BUILDROOT_VERSION }}-
 
+      - name: Cache base build tree
+        uses: actions/cache@v4
+        with:
+          path: |
+            output/host
+            output/target
+            output/images
+            output/build/*/.stamp_*
+            output/build/*/.files-list*
+          key: br-base-${{ env.BUILDROOT_VERSION }}-${{ hashFiles('buildroot-external/**') }}
+
       - name: Configure Buildroot
         run: ci/setup-buildroot.sh
 
@@ -76,9 +87,10 @@ jobs:
         run: |
           OUT="$GITHUB_WORKSPACE/output"
           make -C "$OUT" -j"$(nproc)" \
+            host-pkgconf host-cmake host-libtool host-autoconf host-automake host-gettext \
             host-qt6base \
             qt6base-depends \
-            double-conversion libb2 pcre2 zlib freetype fontconfig expat \
+            double-conversion libb2 pcre2 zlib freetype fontconfig expat libopenssl \
             linux busybox bash dejavu wqy-zenhei \
             dosfstools util-linux attr
 
@@ -102,8 +114,8 @@ jobs:
             targets: qt6base
             packages: qt6base
           - name: storage
-            targets: openssl ntfs-3g libxml2 wimlib hivex
-            packages: openssl ntfs-3g libxml2 wimlib hivex
+            targets: ntfs-3g libxml2 wimlib hivex
+            packages: ntfs-3g libxml2 wimlib hivex
     runs-on: ubuntu-22.04
     timeout-minutes: 180
     steps:

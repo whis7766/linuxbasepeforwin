@@ -415,7 +415,14 @@ QWidget *MainWindow::buildUefiPage()
     auto *list = new QPushButton(QStringLiteral("刷新 Boot 列表"));
     auto *drv = new QPushButton(QStringLiteral("Driver 列表"));
     auto *dorder = new QPushButton(QStringLiteral("读 DriverOrder"));
-    lay->addWidget(list); lay->addWidget(drv); lay->addWidget(dorder);
+    auto *repair = new QPushButton(QStringLiteral("修复 Windows UEFI 引导文件"));
+    lay->addWidget(list); lay->addWidget(drv); lay->addWidget(dorder); lay->addWidget(repair);
+    connect(repair, &QPushButton::clicked, page, [=]() {
+        QString espDir = QInputDialog::getText(page, QStringLiteral("ESP 挂载点"), QStringLiteral("ESP 分区挂载点"), QLineEdit::Normal, "/mnt/esp");
+        QString winDir = QInputDialog::getText(page, QStringLiteral("Windows 挂载点"), QStringLiteral("Windows 分区挂载点"), QLineEdit::Normal, "/mnt/win");
+        if (espDir.isEmpty() || winDir.isEmpty()) return;
+        log->appendPlainText(bk::windowsBootRepair(espDir, winDir));
+    });
     connect(list, &QPushButton::clicked, page, [=]() { log->appendPlainText(bk::uefiList()); });
     connect(drv, &QPushButton::clicked, page, [=]() { log->appendPlainText(bk::uefiDrvList()); });
     connect(dorder, &QPushButton::clicked, page, [=]() { log->appendPlainText(bk::uefiDrvOrder()); });

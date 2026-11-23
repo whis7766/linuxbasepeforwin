@@ -60,6 +60,28 @@ GUI 为 Qt6 页内进程内调用上述后端（`src/gui/Backend.cpp`），长�
 - 自研 GUI 作为 Buildroot 本地包 `lbpe-gui`（CMake，源码 `src/gui/`）
 - 专用库：libwim（WIM）、libhivex（注册表/BCD），均由 Buildroot 包直接链接进 GUI 进程
 
+### 4.1 并行构建流水线
+
+单机全量 Buildroot（内部工具链 + glibc + host Qt + 目标 Qt + GUI + 内核）串行耗时过长，
+故 CI 拆成四段，跨机器并行：
+
+| 阶段 | 内容 | 产出 |
+| --- | --- | --- |
+| `gui-check` | 发行版 Qt6/wimlib/hivex 头文件快编译，先拦语法/链接错误 | 无 |
+| `base` | 交叉工具链、host Qt6 工具、内核、公共依赖 | `base-output.tar.gz`（host 树含 sysroot、target、images、包 stamps） |
+| `parts`（matrix: qt / storage） | qt6base 与 openssl/ntfs-3g/libxml2/wimlib/hivex | `part-overlay.tar.gz`（按 `.files-list*` 精确收集）、`part-build.tar.gz`（仅 stamps） |
+| `final` | 合并 base 与各 part，编译 lbpe-gui、打包 ISO | `linuxbasepe.iso` |
+
+要点：
+
+- Buildroot 的 `output/staging` 只是指向 `output/host/<triple>/sysroot` 的软链，归档时必须带
+  host 树本体；恢复后用 `ci/link-staging.sh` 重建软链。
+- 包级文件清单 `.files-list-host.txt` / `.files-list-staging.txt` / `.files-list.txt` 决定只搬运
+  已安装文件，避免把源码树和中间对象跨机器传输。
+- part 产物只保留 `.stamp_*` 与文件清单，final 认为这些包已构建完成；安装文件由 overlay 提供。
+- `base` 阶段另有 `output/host|target|images` 的 actions/cache（键含外部树哈希），后续提交可直接
+  复用工具链，把重复迭代的 base 时间压到分钟级。
+
 ## 5. 仓库结构
 
 ```

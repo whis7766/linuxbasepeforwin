@@ -56,8 +56,17 @@ QString wimCapture(const QString &src, const QString &wim, const QString &exclud
     int saved = -1;
     if (ef) { fflush(stderr); saved = dup(2); if (saved >= 0) dup2(fileno(ef), 2); }
 
-    r = wimlib_add_image(w, s.constData(), "capture", e.isEmpty() ? nullptr : e.constData(),
-                         WIMLIB_ADD_FLAG_NO_ACLS);
+    // 默认保留 NTFS 安全描述符（备份保真）；文件系统或权限不支持时回退。
+    r = wimlib_add_image(w, s.constData(), "capture", e.isEmpty() ? nullptr : e.constData(), 0);
+    if (r) {
+        wimlib_free(w);
+        r = wimlib_create_new_wim(WIMLIB_COMPRESSION_TYPE_LZX, &w);
+        if (r) return QString("create_new_wim: %1").arg(wimlib_get_error_string((enum wimlib_error_code)r));
+        wimlib_register_progress_function(w, prog, &log);
+        wimlib_set_print_errors(true);
+        r = wimlib_add_image(w, s.constData(), "capture", e.isEmpty() ? nullptr : e.constData(),
+                             WIMLIB_ADD_FLAG_NO_ACLS);
+    }
 
     if (ef) {
         fflush(stderr);
@@ -85,7 +94,11 @@ QString wimApply(const QString &wim, int index, const QString &dest, LogFn log)
     int r = wimlib_open_wim(p.constData(), 0, &w);
     if (r) return QString("open_wim: %1").arg(wimlib_get_error_string((enum wimlib_error_code)r));
     wimlib_register_progress_function(w, prog, &log);
-    r = wimlib_extract_image(w, index, t.constData(), WIMLIB_EXTRACT_FLAG_NO_ACLS);
+    r = wimlib_extract_image(w, index, t.constData(), 0);
+    if (r == WIMLIB_ERR_NTFS_3G) {
+        // 目标文件系统不支持安全描述符时，退回不还原 ACL。
+        r = wimlib_extract_image(w, index, t.constData(), WIMLIB_EXTRACT_FLAG_NO_ACLS);
+    }
     wimlib_free(w);
     return r ? QString("wimlib: %1").arg(wimlib_get_error_string((enum wimlib_error_code)r)) : QString("OK");
 }
@@ -202,7 +215,6 @@ static bool pwriteAll(int fd, const void *buf, size_t n, off_t off)
 
 QString diskPartition(const QString &dev, int pno, quint64 startSector, quint64 endSector)
 {
-    Q_UNUSED(pno);
     if (isPartitionDev(dev)) return err("目标是分区，请选择整块磁盘");
     int fd = openDev(dev, O_RDWR);
     if (fd < 0) return err("open");
@@ -230,13 +242,18 @@ QString diskPartition(const QString &dev, int pno, quint64 startSector, quint64 
             close(fd); return err("read GPT entries");
         }
         GptEntry *items = reinterpret_cast<GptEntry *>(ents.data());
-        int slot = -1;
+        if (pno < 1 || quint32(pno) > h.entNum) { close(fd); return QStringLiteral("partition number out of GPT range"); }
+        int slot = pno - 1;
+        bool zero = true;
+        for (int k = 0; k < 16; k++) if (items[slot].type[k]) { zero = false; break; }
+        if (!zero) { close(fd); return QString("GPT slot %1 already in use").arg(pno); }
         for (quint32 i = 0; i < h.entNum; i++) {
-            bool zero = true;
-            for (int k = 0; k < 16; k++) if (items[i].type[k]) { zero = false; break; }
-            if (zero) { slot = int(i); break; }
+            if (items[i].first == 0 && items[i].last == 0) continue;
+            if (startSector <= items[i].last && endSector >= items[i].first) {
+                close(fd);
+                return QString("sector range overlaps existing partition %1").arg(i + 1);
+            }
         }
-        if (slot < 0) { close(fd); return QStringLiteral("no free GPT entry"); }
 
         static const quint8 dataType[16] = {0xA2,0xA0,0xD0,0xEB,0xE5,0xB9,0x43,0x33,0x87,0xC3,0x68,0xB6,0xB7,0x26,0x99,0xC7};
         memcpy(items[slot].type, dataType, 16);
@@ -293,11 +310,13 @@ QString diskPartition(const QString &dev, int pno, quint64 startSector, quint64 
 
     QByteArray ents(128 * 128, 0);
     GptEntry *items = reinterpret_cast<GptEntry *>(ents.data());
+    if (pno < 1 || pno > 128) { close(fd); return QStringLiteral("partition number must be 1..128"); }
+    const int slot = pno - 1;
     static const quint8 dataType[16] = {0xA2,0xA0,0xD0,0xEB,0xE5,0xB9,0x43,0x33,0x87,0xC3,0x68,0xB6,0xB7,0x26,0x99,0xC7};
-    memcpy(items[0].type, dataType, 16);
-    guidRandom(items[0].guid);
-    items[0].first = startSector;
-    items[0].last = endSector;
+    memcpy(items[slot].type, dataType, 16);
+    guidRandom(items[slot].guid);
+    items[slot].first = startSector;
+    items[slot].last = endSector;
 
     GptHdr ph{};
     memcpy(ph.sig, "EFI PART", 8);
@@ -323,7 +342,7 @@ QString diskPartition(const QString &dev, int pno, quint64 startSector, quint64 
     if (!ok) { close(fd); return err("write GPT"); }
     ioctl(fd, BLKRRPART, 0);
     close(fd);
-    return QString("new GPT created + partition 1 at sectors %1-%2").arg(startSector).arg(endSector);
+    return QString("new GPT created + partition %1 at sectors %2-%3").arg(pno).arg(startSector).arg(endSector);
 }
 
 QString nvmeSanitize(const QString &dev, int action)
@@ -481,6 +500,8 @@ QString bcdCreate(const QString &file, const QString &label, const QString &winr
     QByteArray wr = toUtf16(winroot);
     auto setSz = [&](hive_node_h parent, const char *sub, const QByteArray &val) {
         hive_node_h n = bcdChildCI(h, parent, QString::fromUtf8(sub));
+        if (n && hivex_node_get_value(h, n, "Element"))
+            return; // 已有元素不覆盖，避免改动现有 Windows 引导配置
         if (!n) n = hivex_node_add_child(h, parent, sub);
         struct hive_set_value v{};
         v.key = const_cast<char *>("Element");
@@ -1005,6 +1026,39 @@ QString uefiDrvList()
     return uefiListEntries(QStringLiteral("Driver"));
 }
 
+// Windows UEFI 引导文件修复：确保 ESP 上有 bootmgfw.efi / bootmgr.efi。
+// 仅复制缺失文件，不覆盖已有文件，不改动 BCD。
+QString windowsBootRepair(const QString &espMount, const QString &winMount)
+{
+    const QString espDir = espMount + "/EFI/Microsoft/Boot";
+    const QString espFw = espDir + "/bootmgfw.efi";
+    const QString espMgr = espDir + "/bootmgr.efi";
+    const QString srcDir = winMount + "/Windows/Boot/EFI";
+    QStringList steps;
+
+    if (QFile::exists(espFw)) {
+        steps << "ESP 已有 bootmgfw.efi";
+    } else {
+        const QString srcFw = srcDir + "/bootmgfw.efi";
+        if (!QFile::exists(srcFw)) {
+            steps << "未找到源文件 " + srcFw + "（Windows 分区未挂载或缺少 EFI 引导文件）";
+            return steps.join('\n');
+        }
+        if (!QDir().mkpath(espDir)) { steps << "无法创建 " + espDir; return steps.join('\n'); }
+        steps << (QFile::copy(srcFw, espFw) ? "已复制 bootmgfw.efi 到 ESP" : "复制 bootmgfw.efi 失败");
+    }
+
+    if (!QFile::exists(espMgr)) {
+        const QString srcMgr = srcDir + "/bootmgr.efi";
+        if (QFile::exists(srcMgr)) {
+            QDir().mkpath(espDir);
+            steps << (QFile::copy(srcMgr, espMgr) ? "已复制 bootmgr.efi 到 ESP" : "复制 bootmgr.efi 失败");
+        }
+    }
+    steps << "下一步：用 ESP 分区生成设备路径，路径填 \\EFI\\Microsoft\\Boot\\bootmgfw.efi，再添加为启动项并置顶";
+    return steps.join('\n');
+}
+
 QString uefiDrvOrder()
 {
     QByteArray b = readVar("DriverOrder-" + GUID, nullptr);
@@ -1020,8 +1074,12 @@ QString fsMount(const QString &dev, const QString &dir)
     QDir().mkpath(dir);
     QByteArray s = dev.toUtf8(), t = dir.toUtf8();
     if (mount(s.constData(), t.constData(), "ntfs3", 0, nullptr) == 0) return QString("mounted ntfs3");
-    if (mount(s.constData(), t.constData(), "ntfs-3g", 0, nullptr) == 0) return QString("mounted ntfs-3g");
-    return err("mount");
+    const int first = errno;
+    // ntfs3 拒绝脏卷时用 force 重试（Windows 未正常关机后的常见状态）。
+    if (mount(s.constData(), t.constData(), "ntfs3", 0, "force") == 0)
+        return QString("mounted ntfs3 (force)");
+    errno = first;
+    return err("mount ntfs3");
 }
 
 QString fsUnmount(const QString &dir)
