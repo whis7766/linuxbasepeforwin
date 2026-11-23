@@ -200,6 +200,10 @@ static int runBde(const QString &path)
 static int runNtfs(const QString &dev, const QString &mnt)
 {
     QString r = bk::fsMount(dev, mnt);
+    if (!r.contains("mounted") && r.contains("No such device")) {
+        fprintf(stdout, "  [SKIP] 内核缺少 ntfs3 模块，跳过挂载类用例\n");
+        return 0;
+    }
     check(r.contains("mounted"), "挂载 NTFS: " + r);
     if (!r.contains("mounted")) return 0;
 

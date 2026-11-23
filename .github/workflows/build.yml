@@ -90,6 +90,7 @@ jobs:
       - name: NTFS mount, attributes, ACL
         run: |
           truncate -s 64M "$RUNNER_TEMP/ntfs.img"
+          sudo modprobe ntfs3 || true
           sudo mkntfs -F -q -L LBPE "$RUNNER_TEMP/ntfs.img"
           DEV=$(sudo losetup --find --show "$RUNNER_TEMP/ntfs.img")
           echo "loop=$DEV"
