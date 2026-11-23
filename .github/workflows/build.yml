@@ -202,11 +202,12 @@ jobs:
           path: .
 
       - name: Restore base output
-        # 归档只带 .stamp_*；checkout 出来的 linux.fragment 等文件 mtime 更新，
-        # 会让 kconfig 规则判 stamp 过期而重跑（此时内核源码并不在），故统一刷新 stamp。
+        # 归档只带 .stamp_*，保留其相互顺序；checkout 出来的 linux.fragment / defconfig
+        # mtime 比 stamp 新会让 kconfig 规则判配置过期（此时并无内核源码），故把仓库
+        # 里的配置类文件统一改成旧时间，而不是去刷新 stamp（刷新会打乱 stamp 先后）。
         run: |
           tar -xzf base-output.tar.gz -C output
-          find output/build -maxdepth 2 -name '.stamp_*' -type f -exec touch {} +
+          find buildroot-external -type f -exec touch -d '2000-01-01T00:00:00Z' {} +
 
       - name: Link Buildroot staging sysroot
         run: ci/link-staging.sh
@@ -285,7 +286,7 @@ jobs:
             tar -xzf "$part/part-overlay.tar.gz" -C output
             tar -xzf "$part/part-build.tar.gz" -C output/build
           done
-          find output/build -maxdepth 2 -name '.stamp_*' -type f -exec touch {} +
+          find buildroot-external -type f -exec touch -d '2000-01-01T00:00:00Z' {} +
           ci/link-staging.sh
 
       - name: Build GUI and assemble ISO
