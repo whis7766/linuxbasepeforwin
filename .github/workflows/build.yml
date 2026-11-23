@@ -34,6 +34,37 @@ jobs:
           cmake -S src/gui -B gui-build -DCMAKE_BUILD_TYPE=Release
           cmake --build gui-build -j"$(nproc)"
 
+  devtest:
+    # 普通 Linux（发行版 Qt6/wimlib/hivex）先验证功能，Buildroot 只负责打包集成
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dev deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake g++ pkg-config qt6-base-dev libwim-dev libhivex-dev
+      - name: Build self test
+        run: |
+          cmake -S src/gui -B dev-build -DCMAKE_BUILD_TYPE=Release -DBUILD_SELFTEST=ON
+          cmake --build dev-build -j"$(nproc)" --target lbpe-selftest
+      - name: WIM capture/apply
+        run: ./dev-build/lbpe-selftest wim "$RUNNER_TEMP/wim"
+      - name: BCD read/write
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/bcd.hive" \
+            https://raw.githubusercontent.com/ignore-me-lol/bcd-hive/main/b.hive
+          cp "$RUNNER_TEMP/bcd.hive" "$RUNNER_TEMP/bcd-work.hive"
+          ./dev-build/lbpe-selftest bcd "$RUNNER_TEMP/bcd-work.hive"
+      - name: GPT create/append/guard
+        run: |
+          truncate -s 64M "$RUNNER_TEMP/disk.img"
+          DEV=$(sudo losetup --find --show "$RUNNER_TEMP/disk.img")
+          echo "loop=$DEV"
+          sudo ./dev-build/lbpe-selftest gpt "$DEV"
+          sudo losetup -d "$DEV"
+
   base:
     needs: gui-check
     # 22.04 = gcc11/glibc2.35/cmake3.22: Buildroot 2025.02 builds cleanly here
@@ -157,7 +188,11 @@ jobs:
           path: .
 
       - name: Restore base output
-        run: tar -xzf base-output.tar.gz -C output
+        # 归档只带 .stamp_*；checkout 出来的 linux.fragment 等文件 mtime 更新，
+        # 会让 kconfig 规则判 stamp 过期而重跑（此时内核源码并不在），故统一刷新 stamp。
+        run: |
+          tar -xzf base-output.tar.gz -C output
+          find output/build -maxdepth 2 -name '.stamp_*' -type f -exec touch {} +
 
       - name: Link Buildroot staging sysroot
         run: ci/link-staging.sh
@@ -236,6 +271,7 @@ jobs:
             tar -xzf "$part/part-overlay.tar.gz" -C output
             tar -xzf "$part/part-build.tar.gz" -C output/build
           done
+          find output/build -maxdepth 2 -name '.stamp_*' -type f -exec touch {} +
           ci/link-staging.sh
 
       - name: Build GUI and assemble ISO
@@ -247,6 +283,9 @@ jobs:
           find "$GITHUB_WORKSPACE/output/images" -maxdepth 1 -type f \
             \( -name '*.iso' -o -name '*.img' \) -exec cp -v {} artifacts/ \; || true
           ls -la artifacts
+
+      - name: Verify ISO structure
+        run: tools/verify-iso.sh "$(ls artifacts/*.iso | head -1)"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

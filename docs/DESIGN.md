@@ -55,7 +55,8 @@ GUI 为 Qt6 页内进程内调用上述后端（`src/gui/Backend.cpp`），长�
 - Buildroot 外部树 `buildroot-external/`，defconfig `linuxbasepe_x86_64_defconfig`
 - 内核 6.12 LTS，x86_64 默认 defconfig；glibc 工具链 + C++
 - Qt6：qt6base（gui + widgets + linuxfb 平台插件），GUI 直接跑 framebuffer，无需 X/Wayland
-- rootfs：initramfs 内嵌内核（真·内存系统）
+- rootfs：`rootfs.cpio.gz` 作为 grub `initrd` 外置加载（内核解包成 ramfs，仍是真·内存系统）；
+  不在内核里内嵌，避免包集合变化时 final 阶段必须重编内核
 - 引导：grub2（i386-pc + x86_64-efi），`grub-mkrescue` 生成 BIOS+UEFI 混合 ISO
 - 自研 GUI 作为 Buildroot 本地包 `lbpe-gui`（CMake，源码 `src/gui/`）
 - 专用库：libwim（WIM）、libhivex（注册表/BCD），均由 Buildroot 包直接链接进 GUI 进程
@@ -68,17 +69,23 @@ GUI 为 Qt6 页内进程内调用上述后端（`src/gui/Backend.cpp`），长�
 | 阶段 | 内容 | 产出 |
 | --- | --- | --- |
 | `gui-check` | 发行版 Qt6/wimlib/hivex 头文件快编译，先拦语法/链接错误 | 无 |
+| `devtest` | 同样在发行版 Linux 上编译 `lbpe-selftest`，实跑 WIM/BCD/GPT 功能 | 测试结论 |
 | `base` | 交叉工具链、host Qt6 工具、内核、公共依赖 | `base-output.tar.gz`（host 树含 sysroot、target、images、包 stamps） |
 | `parts`（matrix: qt / storage） | qt6base 与 openssl/ntfs-3g/libxml2/wimlib/hivex | `part-overlay.tar.gz`（按 `.files-list*` 精确收集）、`part-build.tar.gz`（仅 stamps） |
-| `final` | 合并 base 与各 part，编译 lbpe-gui、打包 ISO | `linuxbasepe.iso` |
+| `final` | 合并 base 与各 part，编译 lbpe-gui、生成 `rootfs.cpio.gz`、打包 ISO | `linuxbasepe.iso` |
 
 要点：
 
+- **功能验证优先在普通 Linux 上做**：`devtest` 用发行版 Qt6/wimlib/hivex 直接跑后端逻辑，
+  通过后再进 Buildroot 打包；Buildroot 只承担 rootfs、内核、Qt 目标库与 ISO 集成。
 - Buildroot 的 `output/staging` 只是指向 `output/host/<triple>/sysroot` 的软链，归档时必须带
   host 树本体；恢复后用 `ci/link-staging.sh` 重建软链。
 - 包级文件清单 `.files-list-host.txt` / `.files-list-staging.txt` / `.files-list.txt` 决定只搬运
   已安装文件，避免把源码树和中间对象跨机器传输。
 - part 产物只保留 `.stamp_*` 与文件清单，final 认为这些包已构建完成；安装文件由 overlay 提供。
+- 恢复后统一 `touch` 所有 `.stamp_*`：checkout 出来的 `linux.fragment` 等文件 mtime 更新，
+  否则 kconfig 规则会判定配置过期而重跑（此时内核源码并不在 final 机器上）。
+- 内核只带 `bzImage`（不含 initramfs），rootfs 由 final 现场生成 cpio，因此 final 不需要内核源码树。
 - `base` 阶段另有 `output/host|target|images` 的 actions/cache（键含外部树哈希），后续提交可直接
   复用工具链，把重复迭代的 base 时间压到分钟级。
 

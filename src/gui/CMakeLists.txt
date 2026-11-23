@@ -22,3 +22,17 @@ target_link_libraries(lbpe-gui PRIVATE
 )
 
 install(TARGETS lbpe-gui RUNTIME DESTINATION bin)
+
+# 宿主 Linux 功能自检（不走 Buildroot）：cmake -DBUILD_SELFTEST=ON
+option(BUILD_SELFTEST "Build host-side backend self test" OFF)
+if(BUILD_SELFTEST)
+    add_executable(lbpe-selftest
+        tests/selftest.cpp
+        Backend.cpp
+    )
+    target_include_directories(lbpe-selftest PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(lbpe-selftest PRIVATE
+        Qt6::Core
+        PkgConfig::WIMLIB PkgConfig::HIVEX
+    )
+endif()

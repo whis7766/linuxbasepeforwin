@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# post-build: finalize rootfs before initramfs is packed into the kernel.
+# post-build: finalize rootfs before it is packed into rootfs.cpio.gz.
 set -euo pipefail
 TARGET_DIR="$1"
 

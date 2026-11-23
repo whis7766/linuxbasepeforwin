@@ -33,7 +33,7 @@ linuxfb 本身不带指针设备；GUI 启动时直接扫描 `/sys/class/input`�
 
 ## 技术栈
 
-Buildroot 外部树 + Linux 6.12 + Qt6 Widgets/C++；rootfs 以 initramfs 内嵌内核，启动后整体驻留内存，
+Buildroot 外部树 + Linux 6.12 + Qt6 Widgets/C++；rootfs 以 `rootfs.cpio.gz` 作为 initrd 加载，启动后整体驻留内存，
 可拔 U 盘运行。图形输出为内核 framebuffer（`/dev/fb0`，bochs / simpledrm / efifb），
 控制台 `console=ttyS0,115200 console=tty0` 双输出便于串口与本地排障。
 
@@ -44,6 +44,8 @@ Buildroot 外部树 + Linux 6.12 + Qt6 Widgets/C++；rootfs 以 initramfs 内嵌
 所有构建、编译与发布**一律通过 GitHub Actions**（`.github/workflows/build.yml`）：
 
 - `gui-check`：用发行版 Qt6 + wimlib + hivex 头文件快速编译 GUI，先拦截语法/链接错误；
+- `devtest`：**功能验证一律先在普通 Linux 上做**——用发行版库编译 `lbpe-selftest`，实跑 WIM 捕获/还原、
+  BCD 元素读写、GPT 建表/追加/重叠拦截；Buildroot 只负责 rootfs、内核与 ISO 集成；
 - `base`：并行流水线的共享基础产物（交叉工具链、host Qt6 工具、内核与公共依赖）；
 - `parts`：矩阵并行产出 Qt6 目标库与存储库（wimlib/hivex/NTFS/XML/OpenSSL）产物；
 - `final`：合并 base 与各 part 产物，编译 GUI 并组装 `linuxbasepe.iso`，上传 artifact；

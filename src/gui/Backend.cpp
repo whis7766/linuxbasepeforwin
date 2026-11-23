@@ -273,7 +273,7 @@ QString diskPartition(const QString &dev, int pno, quint64 startSector, quint64 
             GptHdr hb = h;
             hb.cur = h.backup;
             hb.backup = h.cur;
-            hb.entLba = h.backup - 32; // 128*128B = 32 扇区
+            hb.entLba = h.backup - quint64((entBytes + 511) / 512);
             hb.crc = 0;
             hb.crc = crc32g(&hb, 92);
             ok = pwriteAll(fd, ents.constData(), entBytes, off_t(hb.entLba) * 512) &&
