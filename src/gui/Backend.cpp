@@ -1221,9 +1221,21 @@ static QString bdeMethodName(quint16 m)
 }
 #endif
 
+// BitLocker 卷在 OEM 区偏移 3 打 -FVE-FS- 签名；先看签名能给出更明确的提示，
+// 也避免把普通 NTFS 卷交给 libbde 报一串底层错误。
+static bool bdeHasSignature(const QString &dev)
+{
+    QFile f(dev);
+    if (!f.open(QIODevice::ReadOnly)) return false;
+    QByteArray h = f.read(512);
+    return h.size() >= 11 && h.mid(3, 8) == QByteArray("-FVE-FS-", 8);
+}
+
 QString bdeInfo(const QString &dev)
 {
 #ifdef LBPE_HAVE_LIBBDE
+    if (!bdeHasSignature(dev))
+        return QStringLiteral("该卷未启用 BitLocker（未找到 -FVE-FS- 卷头签名）");
     libbde_volume_t *vol = nullptr;
     libbde_error_t *e = nullptr;
     if (libbde_volume_initialize(&vol, &e) != 1) return bdeErr(&e, "initialize");
@@ -1263,6 +1275,8 @@ QString bdeExtract(const QString &dev, const QString &recoveryPassword,
                    const QString &outImage, LogFn log)
 {
 #ifdef LBPE_HAVE_LIBBDE
+    if (!bdeHasSignature(dev))
+        return QStringLiteral("该卷未启用 BitLocker（未找到 -FVE-FS- 卷头签名），无需解密");
     libbde_volume_t *vol = nullptr;
     libbde_error_t *e = nullptr;
     if (libbde_volume_initialize(&vol, &e) != 1) return bdeErr(&e, "initialize");
