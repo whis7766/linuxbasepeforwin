@@ -397,7 +397,8 @@ QWidget *MainWindow::buildUefiPage()
     auto *log = makeLog();
     auto *adesc = new QLineEdit; adesc->setPlaceholderText(QStringLiteral("新启动项描述"));
     auto *adev = new QLineEdit; adev->setPlaceholderText(QStringLiteral("EFI 设备路径 hex (如 01041400...)"));
-    auto *add = new QPushButton(QStringLiteral("添加启动项"));
+    auto *add = new QPushButton(QStringLiteral("添加为启动项 Boot####"));
+    auto *addDrv = new QPushButton(QStringLiteral("添加为驱动项 Driver####"));
     auto *esp = new QComboBox; esp->setEditable(true);
     for (const QString &d : bk::blockDevices()) esp->addItem(d);
     auto *efi = new QLineEdit; efi->setPlaceholderText(QStringLiteral("ESP 内路径，如 \\EFI\\Microsoft\\Boot\\bootmgfw.efi"));
@@ -419,20 +420,44 @@ QWidget *MainWindow::buildUefiPage()
     connect(drv, &QPushButton::clicked, page, [=]() { log->appendPlainText(bk::uefiDrvList()); });
     connect(dorder, &QPushButton::clicked, page, [=]() { log->appendPlainText(bk::uefiDrvOrder()); });
     auto *drow = new QHBoxLayout;
-    auto *dnum = new QLineEdit; dnum->setPlaceholderText(QStringLiteral("Boot#### 编号(hex)"));
-    auto *del = new QPushButton(QStringLiteral("删除"));
-    auto *order = new QLineEdit; order->setPlaceholderText(QStringLiteral("BootOrder 如 0001,0000"));
-    auto *setorder = new QPushButton(QStringLiteral("设置顺序"));
-    drow->addWidget(dnum); drow->addWidget(del); drow->addWidget(order); drow->addWidget(setorder);
+    auto *dnum = new QLineEdit; dnum->setPlaceholderText(QStringLiteral("Boot0001 / Driver0001 或纯编号"));
+    auto *del = new QPushButton(QStringLiteral("删除启动项"));
+    auto *delDrv = new QPushButton(QStringLiteral("删除驱动项"));
+    auto *order = new QLineEdit; order->setPlaceholderText(QStringLiteral("Order 如 0001,0000"));
+    auto *setorder = new QPushButton(QStringLiteral("设置 BootOrder"));
+    auto *setDrvOrder = new QPushButton(QStringLiteral("设置 DriverOrder"));
+    drow->addWidget(dnum); drow->addWidget(del); drow->addWidget(delDrv);
+    drow->addWidget(order, 1); drow->addWidget(setorder); drow->addWidget(setDrvOrder);
     lay->addLayout(drow);
     auto *arow = new QHBoxLayout;
-    arow->addWidget(adesc); arow->addWidget(adev); arow->addWidget(add);
+    arow->addWidget(adesc); arow->addWidget(adev, 1); arow->addWidget(add); arow->addWidget(addDrv);
     lay->addLayout(arow); lay->addWidget(log, 1);
     connect(add, &QPushButton::clicked, page, [=]() {
         log->appendPlainText(bk::uefiAdd(adesc->text(), adev->text()));
+        log->appendPlainText(bk::uefiList());
     });
-    connect(del, &QPushButton::clicked, page, [=]() { log->appendPlainText(bk::uefiDel(dnum->text())); });
-    connect(setorder, &QPushButton::clicked, page, [=]() { log->appendPlainText(bk::uefiSetOrder(order->text())); });
+    connect(addDrv, &QPushButton::clicked, page, [=]() {
+        log->appendPlainText(bk::uefiAddDriver(adesc->text(), adev->text()));
+        log->appendPlainText(bk::uefiDrvList());
+    });
+    connect(del, &QPushButton::clicked, page, [=]() {
+        if (QMessageBox::question(page, QStringLiteral("删除启动项"), QStringLiteral("确认删除 UEFI 启动项？")) != QMessageBox::Yes) return;
+        log->appendPlainText(bk::uefiDel(dnum->text()));
+        log->appendPlainText(bk::uefiList());
+    });
+    connect(delDrv, &QPushButton::clicked, page, [=]() {
+        if (QMessageBox::question(page, QStringLiteral("删除驱动项"), QStringLiteral("确认删除 UEFI 驱动项？")) != QMessageBox::Yes) return;
+        log->appendPlainText(bk::uefiDelDriver(dnum->text()));
+        log->appendPlainText(bk::uefiDrvList());
+    });
+    connect(setorder, &QPushButton::clicked, page, [=]() {
+        log->appendPlainText(bk::uefiSetOrder(order->text()));
+        log->appendPlainText(bk::uefiList());
+    });
+    connect(setDrvOrder, &QPushButton::clicked, page, [=]() {
+        log->appendPlainText(bk::uefiSetDriverOrder(order->text()));
+        log->appendPlainText(bk::uefiDrvList());
+    });
     return page;
 }
 

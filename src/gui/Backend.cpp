@@ -750,23 +750,32 @@ static bool writeVar(const QString &name, quint32 attr, const QByteArray &data)
     return f.write(b) == b.size();
 }
 
+static QString uefiAddEntry(const QString &prefix, const QString &desc, const QString &devicePathHex);
+static QString uefiDelEntry(const QString &prefix, const QString &num);
+static QString uefiListEntries(const QString &prefix);
+static quint16 parseBootNum(const QString &s);
+
 QString uefiList()
 {
+    QByteArray order = readVar("BootOrder-" + GUID, nullptr);
     QString out;
     QDir d(EV);
-    for (const QString &n : d.entryList(QDir::Files)) {
-        if (n.startsWith("Boot") && n.contains("-")) {
-            quint32 attr = 0;
-            QByteArray data = readVar(n, &attr);
-            QString desc;
-            if (data.size() >= 6) {
-                int flen = (unsigned char)data[4] | ((unsigned char)data[5] << 8);
-                desc = QString::fromUtf16(reinterpret_cast<const char16_t *>(data.constData() + 6), flen / 2);
-            }
-            out += QString("%1  %2\n").arg(n.left(8), desc);
+    QStringList names = d.entryList(QDir::Files);
+    names.sort();
+    for (const QString &n : names) {
+        if (!n.startsWith("Boot") || !n.contains('-')) continue;
+        quint32 attr = 0;
+        QByteArray data = readVar(n, &attr);
+        QString desc;
+        if (data.size() >= 6) {
+            int flen = (unsigned char)data[4] | ((unsigned char)data[5] << 8);
+            int chars = flen / 2;
+            const char16_t *p = reinterpret_cast<const char16_t *>(data.constData() + 6);
+            while (chars > 0 && p[chars - 1] == 0) --chars;
+            desc = QString::fromUtf16(p, chars);
         }
+        out += QString("%1  %2\n").arg(n.left(8), desc);
     }
-    QByteArray order = readVar("BootOrder-" + GUID, nullptr);
     out += "BootOrder: ";
     for (int i = 0; i + 1 < order.size(); i += 2)
         out += QString("%1 ").arg((unsigned char)order[i] | ((unsigned char)order[i + 1] << 8), 4, 16, QChar('0'));
@@ -864,10 +873,25 @@ QString uefiDevicePath(const QString &espDev, const QString &fileRel)
 
 QString uefiAdd(const QString &desc, const QString &devicePathHex)
 {
+    return uefiAddEntry(QStringLiteral("Boot"), desc, devicePathHex);
+}
+
+static quint16 parseBootNum(const QString &s)
+{
+    QString t = s.trimmed();
+    if (t.startsWith("Boot", Qt::CaseInsensitive)) t = t.mid(4);
+    if (t.startsWith("Driver", Qt::CaseInsensitive)) t = t.mid(6);
+    if (t.contains('-')) t = t.section('-', 0, 0);
+    return quint16(t.toUShort(nullptr, 16));
+}
+
+// Shared EFI_LOAD_OPTION writer for Boot#### and Driver#### variables.
+static QString uefiAddEntry(const QString &prefix, const QString &desc, const QString &devicePathHex)
+{
     QString hex = devicePathHex;
     hex.remove(' '); hex.remove(','); hex.remove('\n');
     QByteArray dp = QByteArray::fromHex(hex.toLatin1());
-    if (dp.size() < 4) return err("invalid device path hex");
+    if (dp.size() < 4) return QStringLiteral("invalid device path hex");
 
     QByteArray opt;
     quint32 attr = 0x1;                  // LOAD_OPTION_ACTIVE
@@ -881,39 +905,96 @@ QString uefiAdd(const QString &desc, const QString &devicePathHex)
 
     quint16 num = 0;
     for (; num < 0xFFFE; ++num) {
-        QString n = QString("Boot%1-%2").arg(num, 4, 16, QChar('0')).arg(GUID);
+        QString n = QString("%1%2-%3").arg(prefix).arg(num, 4, 16, QChar('0')).arg(GUID);
         if (!QFile::exists(EV + n)) break;
     }
-    QString name = QString("Boot%1-%2").arg(num, 4, 16, QChar('0')).arg(GUID);
-    if (!writeVar(name, 0x7, opt)) return err("write boot entry");
+    QString name = QString("%1%2-%3").arg(prefix).arg(num, 4, 16, QChar('0')).arg(GUID);
+    if (!writeVar(name, 0x7, opt)) return err("write load option");
 
-    QByteArray order = readVar("BootOrder-" + GUID, nullptr);
+    QByteArray order = readVar(prefix + "Order-" + GUID, nullptr);
     order.append((char)(num & 0xff)); order.append((char)((num >> 8) & 0xff));
-    writeVar("BootOrder-" + GUID, 0x7, order);
+    if (!writeVar(prefix + "Order-" + GUID, 0x7, order))
+        return QString("entry %1 written, but %2Order update failed").arg(name, prefix);
     return QString("added %1  %2").arg(name, desc);
+}
+
+static QString uefiListEntries(const QString &prefix)
+{
+    QString out;
+    QDir d(EV);
+    QStringList names = d.entryList(QStringList(prefix + "*"), QDir::Files);
+    names.sort();
+    for (const QString &n : names) {
+        if (!n.contains('-') || n.startsWith(prefix + "Order")) continue;
+        quint32 attr = 0;
+        QByteArray data = readVar(n, &attr);
+        QString desc, dpath;
+        if (data.size() >= 6) {
+            int flen = (unsigned char)data[4] | ((unsigned char)data[5] << 8);
+            int chars = flen / 2;
+            const char16_t *p = reinterpret_cast<const char16_t *>(data.constData() + 6);
+            while (chars > 0 && p[chars - 1] == 0) --chars;
+            desc = QString::fromUtf16(p, chars);
+            int off = 6 + flen;
+            if (data.size() > off)
+                dpath = QString::fromLatin1(data.mid(off).toHex());
+        }
+        out += QString("%1  %2\n").arg(n.left(prefix.size() + 4), desc);
+        if (!dpath.isEmpty()) out += QString("    dp: %1\n").arg(dpath.left(160));
+    }
+    QByteArray order = readVar(prefix + "Order-" + GUID, nullptr);
+    out += prefix + "Order: ";
+    for (int i = 0; i + 1 < order.size(); i += 2)
+        out += QString("%1 ").arg((unsigned char)order[i] | ((unsigned char)order[i + 1] << 8), 4, 16, QChar('0'));
+    return out.trimmed().isEmpty() ? QString("(none)") : out;
 }
 
 QString uefiDel(const QString &num)
 {
-    quint16 v = num.toUShort(nullptr, 16);
-    QString name = QString("Boot%1-%2").arg(v, 4, 16, QChar('0')).arg(GUID);
+    return uefiDelEntry(QStringLiteral("Boot"), num);
+}
+
+static QString uefiDelEntry(const QString &prefix, const QString &num)
+{
+    quint16 v = parseBootNum(num);
+    QString name = QString("%1%2-%3").arg(prefix).arg(v, 4, 16, QChar('0')).arg(GUID);
     if (!QFile::remove(EV + name)) return err("unlink");
 
-    QByteArray order = readVar("BootOrder-" + GUID, nullptr);
+    QByteArray order = readVar(prefix + "Order-" + GUID, nullptr);
     QByteArray next;
     for (int i = 0; i + 1 < order.size(); i += 2) {
         quint16 item = (quint16)(unsigned char)order[i] | ((quint16)(unsigned char)order[i + 1] << 8);
         if (item != v) { next.append(order[i]); next.append(order[i + 1]); }
     }
-    if (next != order) writeVar("BootOrder-" + GUID, 0x7, next);
-    return QString("deleted %1 and removed it from BootOrder").arg(name);
+    if (next != order) writeVar(prefix + "Order-" + GUID, 0x7, next);
+    return QString("deleted %1 and removed it from %2Order").arg(name, prefix);
+}
+
+QString uefiAddDriver(const QString &desc, const QString &devicePathHex)
+{
+    return uefiAddEntry(QStringLiteral("Driver"), desc, devicePathHex);
+}
+
+QString uefiDelDriver(const QString &num)
+{
+    return uefiDelEntry(QStringLiteral("Driver"), num);
+}
+
+QString uefiSetDriverOrder(const QString &csv)
+{
+    QByteArray data;
+    for (const QString &s : csv.split(',', Qt::SkipEmptyParts)) {
+        quint16 v = parseBootNum(s);
+        data.append((char)(v & 0xff)); data.append((char)(v >> 8));
+    }
+    return writeVar("DriverOrder-" + GUID, 0x7, data) ? QString("DriverOrder set") : err("write DriverOrder");
 }
 
 QString uefiSetOrder(const QString &csv)
 {
     QByteArray data;
     for (const QString &s : csv.split(',', Qt::SkipEmptyParts)) {
-        quint16 v = s.toUShort(nullptr, 16);
+        quint16 v = parseBootNum(s);
         data.append((char)(v & 0xff)); data.append((char)(v >> 8));
     }
     return writeVar("BootOrder-" + GUID, 0x7, data) ? QString("BootOrder set") : err("write BootOrder");
@@ -921,11 +1002,7 @@ QString uefiSetOrder(const QString &csv)
 
 QString uefiDrvList()
 {
-    QString out;
-    QDir d(EV);
-    for (const QString &n : d.entryList(QDir::Files))
-        if (n.startsWith("Driver") && n.contains("-") && !n.startsWith("DriverOrder")) out += n + "\n";
-    return out.isEmpty() ? QString("(none)") : out;
+    return uefiListEntries(QStringLiteral("Driver"));
 }
 
 QString uefiDrvOrder()

@@ -37,6 +37,9 @@ QString uefiDevicePath(const QString &espDev, const QString &fileRel);
 QString uefiAdd(const QString &desc, const QString &devicePathHex);
 QString uefiDel(const QString &num);
 QString uefiSetOrder(const QString &csv);
+QString uefiAddDriver(const QString &desc, const QString &devicePathHex);
+QString uefiDelDriver(const QString &num);
+QString uefiSetDriverOrder(const QString &csv);
 QString uefiDrvList();
 QString uefiDrvOrder();
 
