@@ -30,7 +30,7 @@ CONFIG_DRM_FBDEV_EMULATION=y
 CONFIG_DRM_BOCHS=y
 CONFIG_DRM_SIMPLEDRM=y
 
-# 输入设备：Qt linuxfb 通过 evdevmouse 通用插件读鼠标事件节点。
+# 输入设备：GUI 进程内直接读取 /dev/input/eventN 的 REL/ABS 事件。
 # 真机维护场景必须内建 USB HID / PS2 键鼠，不能依赖外部模块。
 CONFIG_INPUT=y
 CONFIG_INPUT_EVDEV=y

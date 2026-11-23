@@ -2,21 +2,27 @@
 # Collect only the files installed by the given Buildroot packages into a
 # portable overlay. Buildroot writes per-package file lists in its build dir:
 #   .files-list-host.txt      -> output/host
-#   .files-list-staging.txt   -> output/staging
+#   .files-list-staging.txt   -> output/host/<triple>/sysroot
 #   .files-list.txt           -> output/target
 set -euo pipefail
 
 OUT="$GITHUB_WORKSPACE/output"
 STAGE="$GITHUB_WORKSPACE/overlay"
 rm -rf "$STAGE"
-mkdir -p "$STAGE/host" "$STAGE/staging" "$STAGE/target" "$STAGE/images"
+mkdir -p "$STAGE/host" "$STAGE/target" "$STAGE/images"
+
+sysroot=$(find "$OUT/host" -mindepth 2 -maxdepth 2 -type d -name sysroot | head -n1)
+if [ -z "$sysroot" ]; then
+  echo "ERROR: Buildroot sysroot not found under output/host" >&2
+  exit 1
+fi
+sysrel=${sysroot#"$OUT/host/"}
 
 copy_list() {
-  local pkg="$1"
-  local build_dir="$2"
-  local list="$3"
-  local src_root="$4"
-  local dst_root="$5"
+  local build_dir="$1"
+  local list="$2"
+  local src_root="$3"
+  local dst_root="$4"
 
   [ -f "$build_dir/$list" ] || return 0
   while IFS=, read -r _ pkg_path; do
@@ -34,10 +40,10 @@ for pkg in "$@"; do
     exit 1
   fi
   for build_dir in "${dirs[@]}"; do
-    copy_list "$pkg" "$build_dir" ".files-list-host.txt" host host
-    copy_list "$pkg" "$build_dir" ".files-list-staging.txt" staging staging
-    copy_list "$pkg" "$build_dir" ".files-list.txt" target target
-    copy_list "$pkg" "$build_dir" ".files-list-images.txt" images images
+    copy_list "$build_dir" ".files-list-host.txt" host "host"
+    copy_list "$build_dir" ".files-list-staging.txt" "host/$sysrel" "host/$sysrel"
+    copy_list "$build_dir" ".files-list.txt" target target
+    copy_list "$build_dir" ".files-list-images.txt" images images
   done
 done
 

@@ -147,6 +147,9 @@ jobs:
       - name: Restore base output
         run: tar -xzf base-output.tar.gz -C output
 
+      - name: Link Buildroot staging sysroot
+        run: ci/link-staging.sh
+
       - name: Build ${{ matrix.name }} package group
         run: make -C "$GITHUB_WORKSPACE/output" -j"$(nproc)" ${{ matrix.targets }}
 
@@ -221,6 +224,7 @@ jobs:
             tar -xzf "$part/part-overlay.tar.gz" -C output
             tar -xzf "$part/part-build.tar.gz" -C output/build
           done
+          ci/link-staging.sh
 
       - name: Build GUI and assemble ISO
         run: make -C "$GITHUB_WORKSPACE/output" -j"$(nproc)"

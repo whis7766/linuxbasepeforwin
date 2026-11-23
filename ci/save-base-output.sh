@@ -1,15 +1,15 @@
 #!/bin/bash
-# Archive the shared base for parallel part runners. Keep installed host,
-# staging, target trees and kernel images; for dependency build directories
-# only keep stamps and file lists, not extracted sources/objects.
+# Archive the shared base for parallel part runners. Keep installed host
+# (which contains the toolchain sysroot), target tree and kernel images; for
+# dependency build directories only keep stamps and file lists, not extracted
+# sources/objects.
 set -euo pipefail
 
 ROOT="$GITHUB_WORKSPACE/base-output"
 rm -rf "$ROOT"
-mkdir -p "$ROOT/host" "$ROOT/staging" "$ROOT/target" "$ROOT/build" "$ROOT/images"
+mkdir -p "$ROOT/host" "$ROOT/target" "$ROOT/build" "$ROOT/images"
 
 cp -a "$GITHUB_WORKSPACE/output/host/." "$ROOT/host/"
-cp -a "$GITHUB_WORKSPACE/output/staging/." "$ROOT/staging/"
 cp -a "$GITHUB_WORKSPACE/output/target/." "$ROOT/target/"
 [ -d "$GITHUB_WORKSPACE/output/images" ] && cp -a "$GITHUB_WORKSPACE/output/images/." "$ROOT/images/" || true
 

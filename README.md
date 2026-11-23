@@ -44,7 +44,9 @@ Buildroot 外部树 + Linux 6.12 + Qt6 Widgets/C++；rootfs 以 initramfs 内嵌
 所有构建、编译与发布**一律通过 GitHub Actions**（`.github/workflows/build.yml`）：
 
 - `gui-check`：用发行版 Qt6 + wimlib + hivex 头文件快速编译 GUI，先拦截语法/链接错误；
-- `build`：Buildroot 全量构建，产出 `linuxbasepe.iso`，上传 artifact；
+- `base`：并行流水线的共享基础产物（交叉工具链、host Qt6 工具、内核与公共依赖）；
+- `parts`：矩阵并行产出 Qt6 目标库与存储库（wimlib/hivex/NTFS/XML/OpenSSL）产物；
+- `final`：合并 base 与各 part 产物，编译 GUI 并组装 `linuxbasepe.iso`，上传 artifact；
 - 打 tag 时自动创建 Release 并附 ISO。
 
 发布产物：<https://github.com/whis7766/linuxbasepeforwin/releases>
