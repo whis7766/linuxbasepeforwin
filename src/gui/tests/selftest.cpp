@@ -7,6 +7,7 @@
 #include "MainWindow.h"
 
 #include <QApplication>
+#include <QFont>
 #include <QTabWidget>
 #include <QWidget>
 #include <QDir>
@@ -156,6 +157,12 @@ static int runGui(const QString &shotDir)
     char *args[] = {a0, a1, a2, nullptr};
     int argc = 3;
     QApplication app(argc, args);
+    QFont base = app.font();
+    base.setFamilies({QStringLiteral("WenQuanYi Zen Hei"),
+                      QStringLiteral("Noto Sans CJK SC"),
+                      QStringLiteral("DejaVu Sans")});
+    base.setPointSize(14);
+    app.setFont(base);
     MainWindow w;
     w.resize(1280, 800);
     w.show();
