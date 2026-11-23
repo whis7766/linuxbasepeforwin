@@ -64,6 +64,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     m_tabs->addTab(buildDiskPage(), QStringLiteral("磁盘管理"));
     m_tabs->addTab(buildBcdPage(), QStringLiteral("BCD 引导"));
     m_tabs->addTab(buildUefiPage(), QStringLiteral("UEFI 启动项"));
+    m_tabs->addTab(buildBitLockerPage(), QStringLiteral("BitLocker 解密"));
     m_tabs->addTab(buildPowerPage(), QStringLiteral("电源"));
     m_tabs->addTab(buildAboutPage(), QStringLiteral("关于"));
     setCentralWidget(m_tabs);
@@ -465,6 +466,73 @@ QWidget *MainWindow::buildUefiPage()
         log->appendPlainText(bk::uefiSetDriverOrder(order->text()));
         log->appendPlainText(bk::uefiDrvList());
     });
+    return page;
+}
+
+QWidget *MainWindow::buildBitLockerPage()
+{
+    auto *page = new QWidget;
+    auto *lay = new QVBoxLayout(page);
+    auto *h = new QLabel(QStringLiteral("BitLocker 解密 (libbde 原生库, 恢复密码解锁)"));
+    h->setFont(titleFont());
+    lay->addWidget(h);
+
+    auto *form = new QFormLayout;
+    auto *dev = new QLineEdit(QStringLiteral("/dev/sdb2"));
+    dev->setPlaceholderText(QStringLiteral("加密卷设备，如 /dev/sdb3"));
+    auto *pass = new QLineEdit;
+    pass->setPlaceholderText(QStringLiteral("48 位数字恢复密码，可带连字符"));
+    auto *out = new QLineEdit(QStringLiteral("/tmp/bde.img"));
+    out->setPlaceholderText(QStringLiteral("解密输出原始镜像路径"));
+    auto *loop = new QLineEdit;
+    loop->setPlaceholderText(QStringLiteral("挂载时自动填入 /dev/loopN"));
+    form->addRow(QStringLiteral("设备"), dev);
+    form->addRow(QStringLiteral("恢复密码"), pass);
+    form->addRow(QStringLiteral("输出镜像"), out);
+    form->addRow(QStringLiteral("loop 设备"), loop);
+    lay->addLayout(form);
+
+    auto *row = new QHBoxLayout;
+    auto *infoBtn = new QPushButton(QStringLiteral("卷信息"));
+    auto *decBtn = new QPushButton(QStringLiteral("解密导出"));
+    auto *mountBtn = new QPushButton(QStringLiteral("挂载镜像"));
+    auto *umountBtn = new QPushButton(QStringLiteral("卸载并分离"));
+    row->addWidget(infoBtn); row->addWidget(decBtn); row->addWidget(mountBtn); row->addWidget(umountBtn);
+    lay->addLayout(row);
+
+    auto *log = makeLog();
+    lay->addWidget(log);
+
+    connect(infoBtn, &QPushButton::clicked, this, [=] {
+        log->appendPlainText(bk::bdeInfo(dev->text()));
+    });
+    connect(decBtn, &QPushButton::clicked, this, [=] {
+        const QString d = dev->text(), p = pass->text(), o = out->text();
+        log->appendPlainText(QStringLiteral("开始解密 %1 ...").arg(d));
+        QtConcurrent::run([=] {
+            auto emitLog = [log](const QString &m) {
+                QMetaObject::invokeMethod(log, [log, m] { log->appendPlainText(m); }, Qt::QueuedConnection);
+            };
+            QString r = bk::bdeExtract(d, p, o, emitLog);
+            emitLog(r);
+        });
+    });
+    connect(mountBtn, &QPushButton::clicked, this, [=] {
+        QString img = out->text();
+        QString ldev = loop->text();
+        if (ldev.isEmpty()) {
+            QString lr = bk::fsAttachLoop(img, &ldev);
+            log->appendPlainText(lr);
+            if (!ldev.isEmpty()) loop->setText(ldev);
+        }
+        if (!ldev.isEmpty()) log->appendPlainText(bk::fsMount(ldev, QStringLiteral("/mnt/bde")));
+    });
+    connect(umountBtn, &QPushButton::clicked, this, [=] {
+        log->appendPlainText(bk::fsUnmount(QStringLiteral("/mnt/bde")));
+        const QString ldev = loop->text();
+        if (!ldev.isEmpty()) { log->appendPlainText(bk::fsDetachLoop(ldev)); loop->clear(); }
+    });
+
     return page;
 }
 

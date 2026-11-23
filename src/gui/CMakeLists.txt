@@ -9,6 +9,10 @@ find_package(Qt6 REQUIRED COMPONENTS Widgets Concurrent)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(WIMLIB REQUIRED IMPORTED_TARGET wimlib)
 pkg_check_modules(HIVEX REQUIRED IMPORTED_TARGET hivex)
+pkg_check_modules(LIBBDE QUIET IMPORTED_TARGET libbde)
+if(LIBBDE_FOUND)
+    message(STATUS "libbde found: BitLocker support enabled")
+endif()
 
 add_executable(lbpe-gui
     main.cpp
@@ -20,6 +24,10 @@ target_link_libraries(lbpe-gui PRIVATE
     Qt6::Widgets Qt6::Concurrent
     PkgConfig::WIMLIB PkgConfig::HIVEX
 )
+if(LIBBDE_FOUND)
+    target_compile_definitions(lbpe-gui PRIVATE LBPE_HAVE_LIBBDE=1)
+    target_link_libraries(lbpe-gui PRIVATE PkgConfig::LIBBDE)
+endif()
 
 install(TARGETS lbpe-gui RUNTIME DESTINATION bin)
 
@@ -36,4 +44,8 @@ if(BUILD_SELFTEST)
         Qt6::Widgets Qt6::Concurrent
         PkgConfig::WIMLIB PkgConfig::HIVEX
     )
+    if(LIBBDE_FOUND)
+        target_compile_definitions(lbpe-selftest PRIVATE LBPE_HAVE_LIBBDE=1)
+        target_link_libraries(lbpe-selftest PRIVATE PkgConfig::LIBBDE)
+    endif()
 endif()

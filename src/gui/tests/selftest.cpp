@@ -10,8 +10,12 @@
 #include <QTabWidget>
 #include <QWidget>
 #include <QDir>
+#include <QPixmap>
+#include <QRegularExpression>
 
 #include <QDir>
+#include <QPixmap>
+#include <QRegularExpression>
 #include <QFile>
 #include <QFileInfo>
 #include <QTemporaryDir>
@@ -146,21 +150,50 @@ static int runUefi()
     return 0;
 }
 
-static int runGui()
+static int runGui(const QString &shotDir)
 {
     static char a0[] = "lbpe-selftest", a1[] = "-platform", a2[] = "offscreen";
     char *args[] = {a0, a1, a2, nullptr};
     int argc = 3;
     QApplication app(argc, args);
     MainWindow w;
+    w.resize(1280, 800);
+    w.show();
+    QApplication::processEvents();
+
     auto *tabs = w.findChild<QTabWidget *>();
     check(tabs != nullptr, "主窗口构建成功");
-    if (tabs) {
-        check(tabs->count() >= 7, QString("页面数量 %1").arg(tabs->count()));
-        QStringList titles;
-        for (int i = 0; i < tabs->count(); ++i) titles << tabs->tabText(i);
-        fprintf(stdout, "  tabs: %s\n", titles.join(" | ").toUtf8().constData());
+    if (!tabs) return 0;
+    check(tabs->count() >= 8, QString("页面数量 %1").arg(tabs->count()));
+
+    QDir().mkpath(shotDir);
+    QStringList titles;
+    for (int i = 0; i < tabs->count(); ++i) {
+        tabs->setCurrentIndex(i);
+        QApplication::processEvents();
+        titles << tabs->tabText(i);
+        QPixmap pm = w.grab();
+        QString safe = tabs->tabText(i);
+        safe.replace(QRegularExpression("[^\\p{L}\\p{N}]+"), "_");
+        QString path = QString("%1/%2_%3.png").arg(shotDir).arg(i, 2, 10, QChar('0')).arg(safe);
+        check(pm.save(path), "截图: " + path);
+        fprintf(stdout, "  shot %s %dx%d\n", path.toUtf8().constData(), pm.width(), pm.height());
     }
+    fprintf(stdout, "  tabs: %s\n", titles.join(" | ").toUtf8().constData());
+    return 0;
+}
+
+static int runBde(const QString &path)
+{
+    QString info = bk::bdeInfo(path);
+    fprintf(stdout, "  info: %s\n", info.left(400).toUtf8().constData());
+    check(info.contains("未启用") || info.contains("可能不是") || info.contains("failed") ||
+          info.contains("open"), "非 BitLocker 卷给出明确信息");
+
+    QString r = bk::bdeExtract(path, "000000-000000-000000-000000-000000-000000-000000-000000",
+                               QStringLiteral("/tmp/lbpe-bde-should-not-exist.img"), nullptr);
+    fprintf(stdout, "  extract: %s\n", r.left(300).toUtf8().constData());
+    check(!r.startsWith("OK"), "非加密卷不产出明文镜像");
     return 0;
 }
 
@@ -198,8 +231,9 @@ static int runNtfs(const QString &dev, const QString &mnt)
 int main(int argc, char **argv)
 {
     const QString mode = argc > 1 ? argv[1] : QString();
+    const int argcAll = argc;
     if (mode == "gui" || mode == "uefi") {
-        int r = mode == "gui" ? runGui() : runUefi();
+        int r = mode == "gui" ? runGui(argcAll > 2 ? QString::fromLocal8Bit(argv[2]) : QStringLiteral("/tmp/lbpe-shots")) : runUefi();
         fprintf(stdout, "== %s: %d failure(s) ==\n", mode.toUtf8().constData(), fails);
         return fails == 0 ? r : 1;
     }
@@ -213,9 +247,8 @@ int main(int argc, char **argv)
     if (mode == "wim") rc = runWim(arg);
     else if (mode == "bcd") rc = runBcd(arg);
     else if (mode == "gpt") rc = runGpt(arg);
-    else if (mode == "uefi") rc = runUefi();
-    else if (mode == "gui") rc = runGui();
     else if (mode == "ntfs") rc = runNtfs(arg, argcFull > 3 ? argv[3] : QStringLiteral("/tmp/ntfsmnt"));
+    else if (mode == "bde") rc = runBde(arg);
     fprintf(stdout, "== %s: %d failure(s) ==\n", argv[1], fails);
     return fails == 0 ? (rc == 0 ? 0 : rc) : 1;
 }

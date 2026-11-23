@@ -15,6 +15,7 @@
 #include <linux/fs.h>
 #include <linux/blkpg.h>
 #include <linux/nvme_ioctl.h>
+#include <linux/loop.h>
 
 #include <QDir>
 #include <QFile>
@@ -23,6 +24,10 @@
 #include <QRandomGenerator>
 #include <cstring>
 #include <cstdio>
+
+#ifdef LBPE_HAVE_LIBBDE
+#include <libbde.h>
+#endif
 
 namespace bk {
 
@@ -954,195 +959,6 @@ QString uefiParseLoadOption(const QByteArray &data, QString *desc, QString *devi
     return QString();
 }
 
-static QString uefiListEntries(const QString &prefix);
-static quint16 parseBootNum(const QString &s);
-
-QString uefiList()
-{
-    QByteArray order = readVar("BootOrder-" + GUID, nullptr);
-    QString out;
-    QDir d(EV);
-    QStringList names = d.entryList(QDir::Files);
-    names.sort();
-    for (const QString &n : names) {
-        if (!n.startsWith("Boot") || !n.contains('-')) continue;
-        quint32 attr = 0;
-        QByteArray data = readVar(n, &attr);
-        QString desc;
-        if (data.size() >= 6) {
-            int flen = (unsigned char)data[4] | ((unsigned char)data[5] << 8);
-            int chars = flen / 2;
-            const char16_t *p = reinterpret_cast<const char16_t *>(data.constData() + 6);
-            while (chars > 0 && p[chars - 1] == 0) --chars;
-            desc = QString::fromUtf16(p, chars);
-        }
-        out += QString("%1  %2\n").arg(n.left(8), desc);
-    }
-    out += "BootOrder: ";
-    for (int i = 0; i + 1 < order.size(); i += 2)
-        out += QString("%1 ").arg((unsigned char)order[i] | ((unsigned char)order[i + 1] << 8), 4, 16, QChar('0'));
-    return out;
-}
-
-static QString parentDiskDev(const QString &partDev)
-{
-    const QString name = QFileInfo(partDev).fileName();
-    const QString sys = QStringLiteral("/sys/class/block/") + name;
-    QFileInfo fi(sys);
-    if (fi.isSymLink()) {
-        const QString target = fi.symLinkTarget();
-        if (!target.isEmpty()) {
-            const QFileInfo targetInfo(fi.dir(), target);
-            const QString diskName = QFileInfo(targetInfo.absolutePath()).fileName();
-            if (!diskName.isEmpty() && QFile::exists(QStringLiteral("/sys/class/block/") + diskName))
-                return QStringLiteral("/dev/") + diskName;
-        }
-    }
-    QString disk = name;
-    if (name.startsWith(QStringLiteral("nvme"), Qt::CaseInsensitive))
-        disk.remove(QRegularExpression("p\\d+$"));
-    else
-        disk.remove(QRegularExpression("\\d+$"));
-    return disk == name ? QString() : QStringLiteral("/dev/") + disk;
-}
-
-QString uefiDevicePath(const QString &espDev, const QString &fileRel)
-{
-    const QString base = QFileInfo(espDev).fileName();
-    QRegularExpression pn(QStringLiteral("(\\d+)$"));
-    QRegularExpressionMatch pm = pn.match(base);
-    if (!pm.hasMatch()) return QStringLiteral("error: ESP 设备需为分区，如 /dev/sda1");
-    int pno = pm.captured(1).toInt();
-    if (pno < 1) return QStringLiteral("error: 分区号无效");
-
-    const QString diskDev = parentDiskDev(espDev);
-    if (diskDev.isEmpty()) return QStringLiteral("error: 无法从分区定位整块磁盘");
-    QFile f(diskDev);
-    if (!f.open(QIODevice::ReadOnly)) return QStringLiteral("error: 打不开 ESP 所在整块磁盘");
-    int fd = f.handle();
-    GptHdr h{};
-    if (pread(fd, &h, sizeof h, 512) != ssize_t(sizeof h) || memcmp(h.sig, "EFI PART", 8) != 0)
-        return QStringLiteral("error: ESP 所在磁盘不是 GPT（仅支持 GPT/UEFI）");
-    if (h.entSize != sizeof(GptEntry) || h.entNum == 0 || h.entNum > 1024)
-        return QStringLiteral("error: GPT 条目布局不支持");
-    QByteArray ents(int(h.entNum) * int(h.entSize), 0);
-    if (pread(fd, ents.data(), ents.size(), off_t(h.entLba) * 512) != ssize_t(ents.size()))
-        return QStringLiteral("error: 读 GPT 分区表失败");
-    const GptEntry *e = reinterpret_cast<const GptEntry *>(ents.constData());
-    if (pno > int(h.entNum)) return QStringLiteral("error: 分区号超出 GPT 表");
-    const GptEntry &pe = e[pno - 1];
-    bool zero = true;
-    for (int i = 0; i < 16; i++) if (pe.type[i]) { zero = false; break; }
-    if (zero) return QStringLiteral("error: 该分区在 GPT 中不存在");
-    f.close();
-
-    auto node = [](quint8 type, quint8 sub, const QByteArray &payload) {
-        QByteArray n;
-        n.append(char(type)); n.append(char(sub));
-        quint16 len = quint16(4 + payload.size());
-        n.append(char(len & 0xff)); n.append(char((len >> 8) & 0xff));
-        n.append(payload);
-        return n;
-    };
-    QByteArray hd(38, 0); // Hard Drive device path payload
-    auto put32 = [](QByteArray &b, int off, quint32 v) {
-        for (int i = 0; i < 4; i++) b[off + i] = char((v >> (8 * i)) & 0xff);
-    };
-    auto put64 = [](QByteArray &b, int off, quint64 v) {
-        for (int i = 0; i < 8; i++) b[off + i] = char((v >> (8 * i)) & 0xff);
-    };
-    put32(hd, 0, quint32(pno));
-    put64(hd, 4, pe.first);
-    put64(hd, 12, pe.last - pe.first + 1);
-    memcpy(hd.data() + 20, pe.guid, 16);
-    hd[36] = char(0x02); // Partition Format: GPT
-    hd[37] = char(0x02); // Signature Type: GUID
-
-    QByteArray filePath;
-    QString rel = fileRel.trimmed();
-    rel.replace('\\', '/');
-    if (!rel.startsWith('/')) rel.prepend('/');
-    rel.replace('/', '\\');
-    for (QChar c : rel) { filePath.append(char(c.unicode() & 0xff)); filePath.append(char((c.unicode() >> 8) & 0xff)); }
-    filePath.append(char(0)); filePath.append(char(0));
-
-    QByteArray dp;
-    dp += node(0x04, 0x01, hd);
-    dp += node(0x04, 0x04, filePath);
-    dp += node(0x7f, 0xff, QByteArray());
-    return QString::fromLatin1(dp.toHex());
-}
-
-QString uefiAdd(const QString &desc, const QString &devicePathHex)
-{
-    return uefiAddEntry(QStringLiteral("Boot"), desc, devicePathHex);
-}
-
-static quint16 parseBootNum(const QString &s)
-{
-    QString t = s.trimmed();
-    if (t.startsWith("Boot", Qt::CaseInsensitive)) t = t.mid(4);
-    if (t.startsWith("Driver", Qt::CaseInsensitive)) t = t.mid(6);
-    if (t.contains('-')) t = t.section('-', 0, 0);
-    return quint16(t.toUShort(nullptr, 16));
-}
-
-// Shared EFI_LOAD_OPTION writer for Boot#### and Driver#### variables.
-static QString uefiAddEntry(const QString &prefix, const QString &desc, const QString &devicePathHex)
-{
-    QString hex = devicePathHex;
-    hex.remove(' '); hex.remove(','); hex.remove('\n');
-    QByteArray dp = QByteArray::fromHex(hex.toLatin1());
-    if (dp.size() < 4) return QStringLiteral("invalid device path hex");
-
-    QByteArray opt;
-    quint32 attr = 0x1;                  // LOAD_OPTION_ACTIVE
-    opt.append((char)(attr & 0xff)); opt.append((char)((attr >> 8) & 0xff));
-    opt.append((char)((attr >> 16) & 0xff)); opt.append((char)((attr >> 24) & 0xff));
-    // EFI_LOAD_OPTION.FilePathListLength counts only the device path bytes.
-    opt.append((char)(dp.size() & 0xff)); opt.append((char)((dp.size() >> 8) & 0xff));
-    for (QChar c : desc) { opt.append((char)(c.unicode() & 0xff)); opt.append((char)((c.unicode() >> 8) & 0xff)); }
-    opt.append(QByteArray(2, '\0'));     // description NUL
-    opt.append(dp);
-
-    quint16 num = 0;
-    for (; num < 0xFFFE; ++num) {
-        QString n = QString("%1%2-%3").arg(prefix).arg(num, 4, 16, QChar('0')).arg(GUID);
-        if (!QFile::exists(EV + n)) break;
-    }
-    QString name = QString("%1%2-%3").arg(prefix).arg(num, 4, 16, QChar('0')).arg(GUID);
-    if (!writeVar(name, 0x7, opt)) return err("write load option");
-
-    QByteArray order = readVar(prefix + "Order-" + GUID, nullptr);
-    order.append((char)(num & 0xff)); order.append((char)((num >> 8) & 0xff));
-    if (!writeVar(prefix + "Order-" + GUID, 0x7, order))
-        return QString("entry %1 written, but %2Order update failed").arg(name, prefix);
-    return QString("added %1  %2").arg(name, desc);
-}
-
-QString uefiParseLoadOption(const QByteArray &data, QString *desc, QString *devicePathHex)
-{
-    if (data.size() < 6) return QStringLiteral("load option too short");
-    const int flen = (unsigned char)data[4] | ((unsigned char)data[5] << 8);
-    int chars = flen / 2;
-    if (flen % 2) return QStringLiteral("file path list length is odd");
-    const int descOff = 6 + flen;
-    if (descOff > data.size()) return QStringLiteral("file path list length exceeds variable size");
-    QString d;
-    const char16_t *p = reinterpret_cast<const char16_t *>(data.constData() + descOff);
-    int maxChars = (data.size() - descOff) / 2;
-    while (chars > 0 && p[chars - 1] == 0) --chars;
-    if (chars > maxChars) chars = maxChars;
-    for (int i = 0; i < chars; ++i) {
-        char16_t c = p[i];
-        if (!c) break;
-        d.append(QChar(c));
-    }
-    if (desc) *desc = d;
-    if (devicePathHex) *devicePathHex = QString::fromLatin1(data.mid(descOff + flen).toHex());
-    return QString();
-}
-
 static QString uefiListEntries(const QString &prefix)
 {
     QString out;
@@ -1340,6 +1156,165 @@ QString fsAclSet(const QString &path, const QString &hex)
     if (setxattr(path.toUtf8().constData(), "system.ntfs_security", b.constData(), b.size(), 0) < 0)
         return err("setxattr security");
     return QString("security descriptor set (%1 bytes)").arg(b.size());
+}
+
+// ---------------- Loop devices (image -> /dev/loopN) ----------------
+QString fsAttachLoop(const QString &image, QString *devOut)
+{
+    const QByteArray img = image.toUtf8();
+    int cfd = open("/dev/loop-control", O_RDWR);
+    if (cfd < 0) return err("open /dev/loop-control");
+    int num = ioctl(cfd, LOOP_CTL_GET_FREE);
+    close(cfd);
+    if (num < 0) return err("LOOP_CTL_GET_FREE");
+
+    QString dev = QString("/dev/loop%1").arg(num);
+    int ffd = open(img.constData(), O_RDWR);
+    if (ffd < 0) return err("open image");
+    int lfd = open(dev.toUtf8().constData(), O_RDWR);
+    if (lfd < 0) { close(ffd); return err("open loop device"); }
+    if (ioctl(lfd, LOOP_SET_FD, ffd) != 0) {
+        const int e = errno; close(lfd); close(ffd); errno = e;
+        return err("LOOP_SET_FD");
+    }
+    struct loop_info64 info{};
+    info.lo_offset = 0;
+    ioctl(lfd, LOOP_SET_STATUS64, &info);  // 部分内核需要显式状态；失败不致命
+    close(lfd);
+    close(ffd);
+    if (devOut) *devOut = dev;
+    return QString("attached %1").arg(dev);
+}
+
+QString fsDetachLoop(const QString &dev)
+{
+    int lfd = open(dev.toUtf8().constData(), O_RDONLY);
+    if (lfd < 0) return err("open loop device");
+    int r = ioctl(lfd, LOOP_CLR_FD, 0);
+    close(lfd);
+    return r == 0 ? QString("detached %1").arg(dev) : err("LOOP_CLR_FD");
+}
+
+// ---------------- BitLocker (libbde) ----------------
+#ifdef LBPE_HAVE_LIBBDE
+static QString bdeErr(libbde_error_t **e, const QString &op)
+{
+    QString msg = op;
+    if (e && *e) {
+        char b[512] = {0};
+        libbde_error_sprint(*e, b, sizeof b - 1);
+        if (b[0]) msg += QString(": ") + QString::fromUtf8(b);
+        libbde_error_free(e);
+    }
+    return msg;
+}
+
+static QString bdeMethodName(quint16 m)
+{
+    switch (m) {
+    case 0x2000: return "AES-CBC 128 + Elephant";
+    case 0x2001: return "AES-CBC 256 + Elephant";
+    case 0x8000: return "AES-XTS 128";
+    case 0x8001: return "AES-XTS 256";
+    default: return QString("method 0x%1").arg(m, 4, 16, QChar('0'));
+    }
+}
+#endif
+
+QString bdeInfo(const QString &dev)
+{
+#ifdef LBPE_HAVE_LIBBDE
+    libbde_volume_t *vol = nullptr;
+    libbde_error_t *e = nullptr;
+    if (libbde_volume_initialize(&vol, &e) != 1) return bdeErr(&e, "initialize");
+    if (libbde_volume_open(vol, dev.toUtf8().constData(), LIBBDE_OPEN_READ, &e) != 1) {
+        QString m = bdeErr(&e, "open");
+        libbde_volume_free(&vol, nullptr);
+        return m + "（可能不是 BitLocker 卷或卷头损坏）";
+    }
+    uint16_t method = 0; size64_t size = 0;
+    libbde_volume_get_encryption_method(vol, &method, nullptr);
+    libbde_volume_get_size(vol, &size, nullptr);
+    int np = 0;
+    libbde_volume_get_number_of_key_protectors(vol, &np, nullptr);
+
+    QString out = QString("卷: %1\n加密方法: %2\n大小: %3 GiB\n密钥保护器: %4 个\n")
+                      .arg(dev, bdeMethodName(method))
+                      .arg(size / (1024.0 * 1024 * 1024), 0, 'f', 2)
+                      .arg(np);
+    for (int i = 0; i < np; i++) {
+        libbde_key_protector_t *kp = nullptr;
+        if (libbde_volume_get_key_protector_by_index(vol, i, &kp, nullptr) == 1 && kp) {
+            uint16_t t = 0;
+            libbde_key_protector_get_type(kp, &t, nullptr);
+            out += QString("  #%1 type 0x%2\n").arg(i + 1).arg(t, 4, 16, QChar('0'));
+            libbde_key_protector_free(&kp, nullptr);
+        }
+    }
+    libbde_volume_free(&vol, nullptr);
+    return out.trimmed();
+#else
+    Q_UNUSED(dev);
+    return QStringLiteral("此构建未启用 BitLocker（缺少 libbde）");
+#endif
+}
+
+QString bdeExtract(const QString &dev, const QString &recoveryPassword,
+                   const QString &outImage, LogFn log)
+{
+#ifdef LBPE_HAVE_LIBBDE
+    libbde_volume_t *vol = nullptr;
+    libbde_error_t *e = nullptr;
+    if (libbde_volume_initialize(&vol, &e) != 1) return bdeErr(&e, "initialize");
+
+    // 恢复密码必须在 open 之前设入；返回 0 表示密码无效
+    int set = libbde_volume_set_utf8_recovery_password(vol, recoveryPassword.toUtf8().constData(), &e);
+    if (set != 1) {
+        QString m = bdeErr(&e, "set recovery password");
+        libbde_volume_free(&vol, nullptr);
+        return m + "（恢复密码应为 48 位数字，可带连字符）";
+    }
+    if (libbde_volume_open(vol, dev.toUtf8().constData(), LIBBDE_OPEN_READ, &e) != 1) {
+        QString m = bdeErr(&e, "open");
+        libbde_volume_free(&vol, nullptr);
+        return m + "（密码可能不匹配此卷）";
+    }
+
+    size64_t total = 0;
+    libbde_volume_get_size(vol, &total, nullptr);
+    QFile out(outImage);
+    if (!out.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        libbde_volume_free(&vol, nullptr);
+        return QString("cannot create %1: %2").arg(outImage, out.errorString());
+    }
+
+    QByteArray buf(4 * 1024 * 1024, 0);
+    size64_t done = 0;
+    while (done < total) {
+        const size_t chunk = (size_t)qMin<size64_t>((size64_t)buf.size(), total - done);
+        const ssize_t n = libbde_volume_read_buffer(vol, buf.data(), chunk, nullptr);
+        if (n < 0) {
+            out.close(); QFile::remove(outImage);
+            libbde_volume_free(&vol, nullptr);
+            return QString("read failed at offset %1").arg((quint64)done);
+        }
+        if (n == 0) break;
+        if (!out.write(buf.constData(), size_t(n))) {
+            out.close(); QFile::remove(outImage);
+            libbde_volume_free(&vol, nullptr);
+            return QString("write failed: %1").arg(out.errorString());
+        }
+        done += size_t(n);
+        if (log && (done / (64 * 1024 * 1024)) != ((done - size_t(n)) / (64 * 1024 * 1024)))
+            log(QString("decrypt %1 / %2 MiB").arg(done / (1024 * 1024)).arg(total / (1024 * 1024)));
+    }
+    out.close();
+    libbde_volume_free(&vol, nullptr);
+    return QString("OK: %1 bytes -> %2").arg((quint64)done).arg(outImage);
+#else
+    Q_UNUSED(dev); Q_UNUSED(recoveryPassword); Q_UNUSED(outImage); Q_UNUSED(log);
+    return QStringLiteral("此构建未启用 BitLocker（缺少 libbde）");
+#endif
 }
 
 // ---------------- Power (reboot(2) / sysrq) ----------------

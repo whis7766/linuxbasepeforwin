@@ -1,3 +1,4 @@
 source "$BR2_EXTERNAL_LINUXBASEPE_PATH/package/lbpe-gui/Config.in"
 source "$BR2_EXTERNAL_LINUXBASEPE_PATH/package/wimlib/Config.in"
 source "$BR2_EXTERNAL_LINUXBASEPE_PATH/package/hivex/Config.in"
+source "$BR2_EXTERNAL_LINUXBASEPE_PATH/package/libbde/Config.in"

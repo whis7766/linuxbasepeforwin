@@ -46,15 +46,32 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             cmake g++ pkg-config qt6-base-dev libwim-dev libhivex-dev \
             libgl1-mesa-dev libglx-dev libopengl-dev libxkbcommon-dev libvulkan-dev \
-            ntfs-3g ntfs-3g-dev
+            ntfs-3g ntfs-3g-dev libssl-dev
+      - name: Build libbde (BitLocker)
+        run: |
+          curl -fsSL -o lb.tar.gz "https://github.com/libyal/libbde/releases/download/20260916/libbde-alpha-20260916.tar.gz"
+          tar -xzf lb.tar.gz
+          cd libbde-20260916
+          ./configure --prefix="$RUNNER_TEMP/libbde" --disable-nls --without-libfuse
+          make -j"$(nproc)"
+          make install
+          echo "PKG_CONFIG_PATH=$RUNNER_TEMP/libbde/lib/pkgconfig" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=$RUNNER_TEMP/libbde/lib" >> "$GITHUB_ENV"
       - name: Build self test
         run: |
           cmake -S src/gui -B dev-build -DCMAKE_BUILD_TYPE=Release -DBUILD_SELFTEST=ON
           cmake --build dev-build -j"$(nproc)" --target lbpe-selftest
       - name: UEFI load option parse
         run: ./dev-build/lbpe-selftest uefi
-      - name: GUI constructs all pages
-        run: ./dev-build/lbpe-selftest gui
+      - name: GUI constructs all pages + screenshots
+        run: ./dev-build/lbpe-selftest gui "$RUNNER_TEMP/shots"
+      - name: Upload GUI screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gui-screenshots
+          path: ${{ runner.temp }}/shots
+          if-no-files-found: warn
       - name: WIM capture/apply
         run: ./dev-build/lbpe-selftest wim "$RUNNER_TEMP/wim"
       - name: BCD read/write
@@ -78,6 +95,8 @@ jobs:
           echo "loop=$DEV"
           sudo ./dev-build/lbpe-selftest ntfs "$DEV" "$RUNNER_TEMP/ntfsmnt"
           sudo losetup -d "$DEV"
+      - name: BitLocker smoke (non-BitLocker volume must fail cleanly)
+        run: ./dev-build/lbpe-selftest bde "$RUNNER_TEMP/ntfs.img"
 
   base:
     needs: gui-check
@@ -135,7 +154,7 @@ jobs:
             host-pkgconf host-cmake host-libtool host-autoconf host-automake host-gettext \
             host-qt6base \
             qt6base-depends \
-            double-conversion libb2 pcre2 zlib freetype fontconfig expat libopenssl \
+            double-conversion libb2 pcre2 zlib freetype fontconfig expat libopenssl libbde \
             linux busybox bash dejavu wqy-zenhei \
             dosfstools util-linux attr
 

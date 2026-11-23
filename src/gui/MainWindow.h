@@ -17,6 +17,7 @@ private:
     QWidget *buildDiskPage();
     QWidget *buildBcdPage();
     QWidget *buildUefiPage();
+    QWidget *buildBitLockerPage();
     QWidget *buildPowerPage();
     QWidget *buildAboutPage();
 

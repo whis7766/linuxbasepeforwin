@@ -53,6 +53,14 @@ QString fsAttrGet(const QString &path);
 QString fsAttrSet(const QString &path, quint32 value);
 QString fsAclGet(const QString &path);
 QString fsAclSet(const QString &path, const QString &hex);
+// 镜像/明文镜像挂到 loop（LOOP_SET_FD），用于解密后直接挂载浏览
+QString fsAttachLoop(const QString &image, QString *devOut);
+QString fsDetachLoop(const QString &dev);
+
+// BitLocker via libbde (native library API, recovery password unlock)
+QString bdeInfo(const QString &dev);
+QString bdeExtract(const QString &dev, const QString &recoveryPassword,
+                   const QString &outImage, LogFn log);
 
 // Power via reboot(2) / sysrq
 QString powerReboot();

@@ -1,0 +1,10 @@
+config BR2_PACKAGE_LIBBDE
+	bool "libbde (BitLocker Drive Encryption)"
+	depends on BR2_TOOLCHAIN_HAS_THREADS
+	select BR2_PACKAGE_LIBOPENSSL
+	help
+	  Library to access BitLocker Drive Encryption (BDE) volumes.
+	  Supports recovery password / password protected volumes and
+	  decrypting volume data through libbde_volume_read_buffer().
+
+	  https://github.com/libyal/libbde
