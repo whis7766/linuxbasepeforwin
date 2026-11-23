@@ -143,6 +143,7 @@ jobs:
             output/images
             output/build/*/.stamp_*
             output/build/*/.files-list*
+            output/build/linux-6.12
           key: br-base-${{ env.BUILDROOT_VERSION }}-${{ hashFiles('buildroot-external/configs/*', 'buildroot-external/package/**', 'buildroot-external/Config.in', 'buildroot-external/external.mk') }}
 
       - name: Configure Buildroot
@@ -150,6 +151,8 @@ jobs:
 
       - name: Build shared toolchain, host tools, kernel and common dependencies
         run: |
+          # 仅有 stamps 没有内核源码时 kconfig 无法重跑，先丢弃该目录让 Buildroot 重新解包。
+          [ -f "$GITHUB_WORKSPACE/output/build/linux-6.12/Makefile" ] || rm -rf "$GITHUB_WORKSPACE/output/build/linux-6.12" 
           OUT="$GITHUB_WORKSPACE/output"
           make -C "$OUT" -j"$(nproc)" \
             host-pkgconf host-cmake host-libtool host-autoconf host-automake host-gettext \
@@ -161,6 +164,11 @@ jobs:
 
       - name: Archive base output
         run: ci/save-base-output.sh
+
+      - name: Slim kernel build tree for cache
+        run: |
+          find output/build/linux-6.12 -type f \( -name '*.o' -o -name '*.a' -o -name '*.ko' \) -delete 2>/dev/null || true
+          du -sh output/build/linux-6.12 || true
 
       - name: Upload base output
         uses: actions/upload-artifact@v4
