@@ -33,6 +33,8 @@ QString bcdDeleteElement(const QString &file, const QString &guid, const QString
 
 // UEFI via efivarfs direct read/write
 QString uefiList();
+// 解析 EFI_LOAD_OPTION 二进制（Boot####/Driver#### 变量内容），供 UI 与自检共用
+QString uefiParseLoadOption(const QByteArray &data, QString *desc, QString *devicePathHex);
 QString uefiDevicePath(const QString &espDev, const QString &fileRel);
 QString uefiAdd(const QString &desc, const QString &devicePathHex);
 QString uefiDel(const QString &num);

@@ -23,8 +23,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            cmake g++ pkg-config qt6-base-dev libwim-dev libhivex-dev ntfs-3g-dev libfuse-dev \
-            libgl1-mesa-dev libglx-dev libopengl-dev libxkbcommon-dev libvulkan-dev
+            cmake g++ pkg-config qt6-base-dev libwim-dev libhivex-dev \
+            libgl1-mesa-dev libglx-dev libopengl-dev libxkbcommon-dev libvulkan-dev ntfs-3g-dev libfuse-dev
       - name: Inspect hivex header
         run: |
           sed -n '/struct hive_set_value/,/};/p' /usr/include/hivex.h || true
@@ -44,11 +44,17 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            cmake g++ pkg-config qt6-base-dev libwim-dev libhivex-dev
+            cmake g++ pkg-config qt6-base-dev libwim-dev libhivex-dev \
+            libgl1-mesa-dev libglx-dev libopengl-dev libxkbcommon-dev libvulkan-dev \
+            ntfs-3g
       - name: Build self test
         run: |
           cmake -S src/gui -B dev-build -DCMAKE_BUILD_TYPE=Release -DBUILD_SELFTEST=ON
           cmake --build dev-build -j"$(nproc)" --target lbpe-selftest
+      - name: UEFI load option parse
+        run: ./dev-build/lbpe-selftest uefi
+      - name: GUI constructs all pages
+        run: ./dev-build/lbpe-selftest gui
       - name: WIM capture/apply
         run: ./dev-build/lbpe-selftest wim "$RUNNER_TEMP/wim"
       - name: BCD read/write
@@ -63,6 +69,14 @@ jobs:
           DEV=$(sudo losetup --find --show "$RUNNER_TEMP/disk.img")
           echo "loop=$DEV"
           sudo ./dev-build/lbpe-selftest gpt "$DEV"
+          sudo losetup -d "$DEV"
+      - name: NTFS mount, attributes, ACL
+        run: |
+          truncate -s 64M "$RUNNER_TEMP/ntfs.img"
+          sudo mkntfs -F -q -L LBPE "$RUNNER_TEMP/ntfs.img"
+          DEV=$(sudo losetup --find --show "$RUNNER_TEMP/ntfs.img")
+          echo "loop=$DEV"
+          sudo ./dev-build/lbpe-selftest ntfs "$DEV" "$RUNNER_TEMP/ntfsmnt"
           sudo losetup -d "$DEV"
 
   base:

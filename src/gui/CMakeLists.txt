@@ -29,10 +29,11 @@ if(BUILD_SELFTEST)
     add_executable(lbpe-selftest
         tests/selftest.cpp
         Backend.cpp
+        MainWindow.cpp
     )
     target_include_directories(lbpe-selftest PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     target_link_libraries(lbpe-selftest PRIVATE
-        Qt6::Core
+        Qt6::Widgets Qt6::Concurrent
         PkgConfig::WIMLIB PkgConfig::HIVEX
     )
 endif()

@@ -787,6 +787,187 @@ QString uefiList()
         if (!n.startsWith("Boot") || !n.contains('-')) continue;
         quint32 attr = 0;
         QByteArray data = readVar(n, &attr);
+        QString desc, dpath, perr = uefiParseLoadOption(data, &desc, &dpath);
+        if (!perr.isEmpty()) desc = "(" + perr + ")";
+        out += QString("%1  %2\n").arg(n.left(8), desc);
+        if (!dpath.isEmpty()) out += QString("    dp: %1\n").arg(dpath.left(160));
+    }
+    out += "BootOrder: ";
+    for (int i = 0; i + 1 < order.size(); i += 2)
+        out += QString("%1 ").arg((unsigned char)order[i] | ((unsigned char)order[i + 1] << 8), 4, 16, QChar('0'));
+    return out;
+}
+
+static QString parentDiskDev(const QString &partDev)
+{
+    const QString name = QFileInfo(partDev).fileName();
+    const QString sys = QStringLiteral("/sys/class/block/") + name;
+    QFileInfo fi(sys);
+    if (fi.isSymLink()) {
+        const QString target = fi.symLinkTarget();
+        if (!target.isEmpty()) {
+            const QFileInfo targetInfo(fi.dir(), target);
+            const QString diskName = QFileInfo(targetInfo.absolutePath()).fileName();
+            if (!diskName.isEmpty() && QFile::exists(QStringLiteral("/sys/class/block/") + diskName))
+                return QStringLiteral("/dev/") + diskName;
+        }
+    }
+    QString disk = name;
+    if (name.startsWith(QStringLiteral("nvme"), Qt::CaseInsensitive))
+        disk.remove(QRegularExpression("p\\d+$"));
+    else
+        disk.remove(QRegularExpression("\\d+$"));
+    return disk == name ? QString() : QStringLiteral("/dev/") + disk;
+}
+
+QString uefiDevicePath(const QString &espDev, const QString &fileRel)
+{
+    const QString base = QFileInfo(espDev).fileName();
+    QRegularExpression pn(QStringLiteral("(\\d+)$"));
+    QRegularExpressionMatch pm = pn.match(base);
+    if (!pm.hasMatch()) return QStringLiteral("error: ESP 设备需为分区，如 /dev/sda1");
+    int pno = pm.captured(1).toInt();
+    if (pno < 1) return QStringLiteral("error: 分区号无效");
+
+    const QString diskDev = parentDiskDev(espDev);
+    if (diskDev.isEmpty()) return QStringLiteral("error: 无法从分区定位整块磁盘");
+    QFile f(diskDev);
+    if (!f.open(QIODevice::ReadOnly)) return QStringLiteral("error: 打不开 ESP 所在整块磁盘");
+    int fd = f.handle();
+    GptHdr h{};
+    if (pread(fd, &h, sizeof h, 512) != ssize_t(sizeof h) || memcmp(h.sig, "EFI PART", 8) != 0)
+        return QStringLiteral("error: ESP 所在磁盘不是 GPT（仅支持 GPT/UEFI）");
+    if (h.entSize != sizeof(GptEntry) || h.entNum == 0 || h.entNum > 1024)
+        return QStringLiteral("error: GPT 条目布局不支持");
+    QByteArray ents(int(h.entNum) * int(h.entSize), 0);
+    if (pread(fd, ents.data(), ents.size(), off_t(h.entLba) * 512) != ssize_t(ents.size()))
+        return QStringLiteral("error: 读 GPT 分区表失败");
+    const GptEntry *e = reinterpret_cast<const GptEntry *>(ents.constData());
+    if (pno > int(h.entNum)) return QStringLiteral("error: 分区号超出 GPT 表");
+    const GptEntry &pe = e[pno - 1];
+    bool zero = true;
+    for (int i = 0; i < 16; i++) if (pe.type[i]) { zero = false; break; }
+    if (zero) return QStringLiteral("error: 该分区在 GPT 中不存在");
+    f.close();
+
+    auto node = [](quint8 type, quint8 sub, const QByteArray &payload) {
+        QByteArray n;
+        n.append(char(type)); n.append(char(sub));
+        quint16 len = quint16(4 + payload.size());
+        n.append(char(len & 0xff)); n.append(char((len >> 8) & 0xff));
+        n.append(payload);
+        return n;
+    };
+    QByteArray hd(38, 0); // Hard Drive device path payload
+    auto put32 = [](QByteArray &b, int off, quint32 v) {
+        for (int i = 0; i < 4; i++) b[off + i] = char((v >> (8 * i)) & 0xff);
+    };
+    auto put64 = [](QByteArray &b, int off, quint64 v) {
+        for (int i = 0; i < 8; i++) b[off + i] = char((v >> (8 * i)) & 0xff);
+    };
+    put32(hd, 0, quint32(pno));
+    put64(hd, 4, pe.first);
+    put64(hd, 12, pe.last - pe.first + 1);
+    memcpy(hd.data() + 20, pe.guid, 16);
+    hd[36] = char(0x02); // Partition Format: GPT
+    hd[37] = char(0x02); // Signature Type: GUID
+
+    QByteArray filePath;
+    QString rel = fileRel.trimmed();
+    rel.replace('\\', '/');
+    if (!rel.startsWith('/')) rel.prepend('/');
+    rel.replace('/', '\\');
+    for (QChar c : rel) { filePath.append(char(c.unicode() & 0xff)); filePath.append(char((c.unicode() >> 8) & 0xff)); }
+    filePath.append(char(0)); filePath.append(char(0));
+
+    QByteArray dp;
+    dp += node(0x04, 0x01, hd);
+    dp += node(0x04, 0x04, filePath);
+    dp += node(0x7f, 0xff, QByteArray());
+    return QString::fromLatin1(dp.toHex());
+}
+
+QString uefiAdd(const QString &desc, const QString &devicePathHex)
+{
+    return uefiAddEntry(QStringLiteral("Boot"), desc, devicePathHex);
+}
+
+static quint16 parseBootNum(const QString &s)
+{
+    QString t = s.trimmed();
+    if (t.startsWith("Boot", Qt::CaseInsensitive)) t = t.mid(4);
+    if (t.startsWith("Driver", Qt::CaseInsensitive)) t = t.mid(6);
+    if (t.contains('-')) t = t.section('-', 0, 0);
+    return quint16(t.toUShort(nullptr, 16));
+}
+
+// Shared EFI_LOAD_OPTION writer for Boot#### and Driver#### variables.
+static QString uefiAddEntry(const QString &prefix, const QString &desc, const QString &devicePathHex)
+{
+    QString hex = devicePathHex;
+    hex.remove(' '); hex.remove(','); hex.remove('\n');
+    QByteArray dp = QByteArray::fromHex(hex.toLatin1());
+    if (dp.size() < 4) return QStringLiteral("invalid device path hex");
+
+    QByteArray opt;
+    quint32 attr = 0x1;                  // LOAD_OPTION_ACTIVE
+    opt.append((char)(attr & 0xff)); opt.append((char)((attr >> 8) & 0xff));
+    opt.append((char)((attr >> 16) & 0xff)); opt.append((char)((attr >> 24) & 0xff));
+    // EFI_LOAD_OPTION.FilePathListLength counts only the device path bytes.
+    opt.append((char)(dp.size() & 0xff)); opt.append((char)((dp.size() >> 8) & 0xff));
+    for (QChar c : desc) { opt.append((char)(c.unicode() & 0xff)); opt.append((char)((c.unicode() >> 8) & 0xff)); }
+    opt.append(QByteArray(2, '\0'));     // description NUL
+    opt.append(dp);
+
+    quint16 num = 0;
+    for (; num < 0xFFFE; ++num) {
+        QString n = QString("%1%2-%3").arg(prefix).arg(num, 4, 16, QChar('0')).arg(GUID);
+        if (!QFile::exists(EV + n)) break;
+    }
+    QString name = QString("%1%2-%3").arg(prefix).arg(num, 4, 16, QChar('0')).arg(GUID);
+    if (!writeVar(name, 0x7, opt)) return err("write load option");
+
+    QByteArray order = readVar(prefix + "Order-" + GUID, nullptr);
+    order.append((char)(num & 0xff)); order.append((char)((num >> 8) & 0xff));
+    if (!writeVar(prefix + "Order-" + GUID, 0x7, order))
+        return QString("entry %1 written, but %2Order update failed").arg(name, prefix);
+    return QString("added %1  %2").arg(name, desc);
+}
+
+QString uefiParseLoadOption(const QByteArray &data, QString *desc, QString *devicePathHex)
+{
+    // EFI_LOAD_OPTION: Attributes(4) | FilePathListLength(2) | Description(UTF-16, NUL 结尾)
+    //                 | FilePathList(FilePathListLength 字节)
+    if (data.size() < 6) return QStringLiteral("load option too short");
+    const int flen = (unsigned char)data[4] | ((unsigned char)data[5] << 8);
+    QString d;
+    int pos = 6;
+    while (pos + 1 < data.size()) {
+        char16_t c = (char16_t)((unsigned char)data[pos] | ((unsigned char)data[pos + 1] << 8));
+        pos += 2;
+        if (!c) break;
+        d.append(QChar(c));
+    }
+    if (pos + flen > data.size()) return QStringLiteral("file path list exceeds variable size");
+    if (desc) *desc = d;
+    if (devicePathHex) *devicePathHex = QString::fromLatin1(data.mid(pos, flen).toHex());
+    return QString();
+}
+
+static QString uefiListEntries(const QString &prefix);
+static quint16 parseBootNum(const QString &s);
+
+QString uefiList()
+{
+    QByteArray order = readVar("BootOrder-" + GUID, nullptr);
+    QString out;
+    QDir d(EV);
+    QStringList names = d.entryList(QDir::Files);
+    names.sort();
+    for (const QString &n : names) {
+        if (!n.startsWith("Boot") || !n.contains('-')) continue;
+        quint32 attr = 0;
+        QByteArray data = readVar(n, &attr);
         QString desc;
         if (data.size() >= 6) {
             int flen = (unsigned char)data[4] | ((unsigned char)data[5] << 8);
@@ -939,6 +1120,29 @@ static QString uefiAddEntry(const QString &prefix, const QString &desc, const QS
     return QString("added %1  %2").arg(name, desc);
 }
 
+QString uefiParseLoadOption(const QByteArray &data, QString *desc, QString *devicePathHex)
+{
+    if (data.size() < 6) return QStringLiteral("load option too short");
+    const int flen = (unsigned char)data[4] | ((unsigned char)data[5] << 8);
+    int chars = flen / 2;
+    if (flen % 2) return QStringLiteral("file path list length is odd");
+    const int descOff = 6 + flen;
+    if (descOff > data.size()) return QStringLiteral("file path list length exceeds variable size");
+    QString d;
+    const char16_t *p = reinterpret_cast<const char16_t *>(data.constData() + descOff);
+    int maxChars = (data.size() - descOff) / 2;
+    while (chars > 0 && p[chars - 1] == 0) --chars;
+    if (chars > maxChars) chars = maxChars;
+    for (int i = 0; i < chars; ++i) {
+        char16_t c = p[i];
+        if (!c) break;
+        d.append(QChar(c));
+    }
+    if (desc) *desc = d;
+    if (devicePathHex) *devicePathHex = QString::fromLatin1(data.mid(descOff + flen).toHex());
+    return QString();
+}
+
 static QString uefiListEntries(const QString &prefix)
 {
     QString out;
@@ -949,17 +1153,8 @@ static QString uefiListEntries(const QString &prefix)
         if (!n.contains('-') || n.startsWith(prefix + "Order")) continue;
         quint32 attr = 0;
         QByteArray data = readVar(n, &attr);
-        QString desc, dpath;
-        if (data.size() >= 6) {
-            int flen = (unsigned char)data[4] | ((unsigned char)data[5] << 8);
-            int chars = flen / 2;
-            const char16_t *p = reinterpret_cast<const char16_t *>(data.constData() + 6);
-            while (chars > 0 && p[chars - 1] == 0) --chars;
-            desc = QString::fromUtf16(p, chars);
-            int off = 6 + flen;
-            if (data.size() > off)
-                dpath = QString::fromLatin1(data.mid(off).toHex());
-        }
+        QString desc, dpath, perr = uefiParseLoadOption(data, &desc, &dpath);
+        if (!perr.isEmpty()) desc = "(" + perr + ")";
         out += QString("%1  %2\n").arg(n.left(prefix.size() + 4), desc);
         if (!dpath.isEmpty()) out += QString("    dp: %1\n").arg(dpath.left(160));
     }
@@ -1055,6 +1250,19 @@ QString windowsBootRepair(const QString &espMount, const QString &winMount)
             steps << (QFile::copy(srcMgr, espMgr) ? "已复制 bootmgr.efi 到 ESP" : "复制 bootmgr.efi 失败");
         }
     }
+    // BCD 存储：ESP 缺失时从 Windows 卷 /Boot/BCD 复制（NVRAM 里的 Windows
+    // 启动项指向 ESP 上的这份存储，缺失会直接报 0xc000000f）。
+    const QString espBcd = espDir + "/BCD";
+    const QString srcBcd = winMount + "/Boot/BCD";
+    if (QFile::exists(espBcd)) {
+        steps << "ESP 已有 BCD 存储，未覆盖";
+    } else if (QFile::exists(srcBcd)) {
+        QDir().mkpath(espDir);
+        steps << (QFile::copy(srcBcd, espBcd) ? "已从 Windows 卷复制 BCD 存储到 ESP" : "复制 BCD 存储失败");
+    } else {
+        steps << "未找到 Windows 卷的 " + srcBcd + "，无法复制 BCD 存储";
+    }
+
     steps << "下一步：用 ESP 分区生成设备路径，路径填 \\EFI\\Microsoft\\Boot\\bootmgfw.efi，再添加为启动项并置顶";
     return steps.join('\n');
 }
