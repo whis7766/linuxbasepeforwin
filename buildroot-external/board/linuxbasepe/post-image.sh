@@ -20,7 +20,7 @@ mkdir -p "${ISO_ROOT}/EFI/BOOT"
 if command -v grub-mkstandalone >/dev/null; then
   ( cd "${ISO_ROOT}" && grub-mkstandalone -O x86_64-efi \
       -o "${ISO_ROOT}/EFI/BOOT/BOOTX64.EFI" \
-      --modules="normal linux initrd search part_gpt part_msdos fat iso9660" \
+      --modules="normal linux search part_gpt part_msdos fat iso9660" \
       "boot/grub/grub.cfg=boot/grub/grub.cfg" )
 fi
 
