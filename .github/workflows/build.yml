@@ -143,7 +143,7 @@ jobs:
             output/images
             output/build/*/.stamp_*
             output/build/*/.files-list*
-          key: br-base-${{ env.BUILDROOT_VERSION }}-${{ hashFiles('buildroot-external/**') }}
+          key: br-base-${{ env.BUILDROOT_VERSION }}-${{ hashFiles('buildroot-external/configs/*', 'buildroot-external/package/**', 'buildroot-external/Config.in', 'buildroot-external/external.mk') }}
 
       - name: Configure Buildroot
         run: ci/setup-buildroot.sh
