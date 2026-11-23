@@ -1268,7 +1268,9 @@ QString bdeExtract(const QString &dev, const QString &recoveryPassword,
     if (libbde_volume_initialize(&vol, &e) != 1) return bdeErr(&e, "initialize");
 
     // 恢复密码必须在 open 之前设入；返回 0 表示密码无效
-    int set = libbde_volume_set_utf8_recovery_password(vol, recoveryPassword.toUtf8().constData(), &e);
+    QByteArray pw = recoveryPassword.toUtf8();
+    int set = libbde_volume_set_utf8_recovery_password(vol, (const uint8_t *)pw.constData(),
+                                                       (size_t)pw.size(), &e);
     if (set != 1) {
         QString m = bdeErr(&e, "set recovery password");
         libbde_volume_free(&vol, nullptr);

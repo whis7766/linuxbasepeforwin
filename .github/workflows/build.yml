@@ -24,7 +24,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             cmake g++ pkg-config qt6-base-dev libwim-dev libhivex-dev \
-            libgl1-mesa-dev libglx-dev libopengl-dev libxkbcommon-dev libvulkan-dev ntfs-3g-dev
+            libgl1-mesa-dev libglx-dev libopengl-dev libxkbcommon-dev libvulkan-dev ntfs-3g-dev libfuse-dev
       - name: Inspect hivex header
         run: |
           sed -n '/struct hive_set_value/,/};/p' /usr/include/hivex.h || true
